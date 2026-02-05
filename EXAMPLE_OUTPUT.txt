@@ -1,0 +1,193 @@
+===============================================================================
+POLYMARKET PRICING GAPS - EXAMPLE OUTPUT
+===============================================================================
+
+This is an example of what the system displays when it detects pricing gaps.
+
+===============================================================================
+              [2026-02-05 10:30:45] POLYMARKET PRICING GAPS
+                        - Real-time Analysis
+===============================================================================
+
+╭──────────────────────────────────────────────────────────────────────────╮
+│                 RANK #1 - Confidence: 87/100                             │
+│                    Sentiment-Probability Mismatch                        │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  Contract: Will Bitcoin reach $100,000 by end of Q1 2026?               │
+│                                                                          │
+│  Current Odds: YES 45.0% / NO 55.0%                                     │
+│  Implied Odds: 72.3%                                                    │
+│  Potential Edge: 27.3%                                                  │
+│                                                                          │
+│  Analysis:                                                              │
+│  Social sentiment is overwhelmingly bullish (76% positive) while market │
+│  odds remain at just 45%. Recent institutional adoption announcements   │
+│  and positive regulatory developments have not yet been fully priced in.│
+│  The 27-point gap between sentiment-implied probability and market odds │
+│  suggests a significant undervaluation of YES position.                 │
+│                                                                          │
+│  Evidence:                                                              │
+│    • Average sentiment: 76% positive (score: +0.52)                     │
+│    • Positive posts: 81.4% (147 total)                                  │
+│    • Market odds: unchanged (potential lag)                             │
+│                                                                          │
+│  Category: Crypto | Detected: 2026-02-05 10:28:12                      │
+│                                                                          │
+╰──────────────────────────────────────────────────────────────────────────╯
+
+╭──────────────────────────────────────────────────────────────────────────╮
+│                 RANK #2 - Confidence: 82/100                             │
+│                      Information Asymmetry                               │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  Contract: Will SpaceX successfully launch Starship in February 2026?   │
+│                                                                          │
+│  Current Odds: YES 62.0% / NO 38.0%                                     │
+│  Potential Edge: 18.5%                                                  │
+│                                                                          │
+│  Analysis:                                                              │
+│  Sentiment has shifted dramatically in the last 3 hours (+0.37 change)  │
+│  following SpaceX's announcement of successful static fire tests. Market│
+│  odds have not moved to reflect this new information. Recent posts show │
+│  85% of mentions are now positive compared to 48% positive 6 hours ago. │
+│                                                                          │
+│  Evidence:                                                              │
+│    • Recent sentiment shift: 0.37 more bullish                          │
+│    • Average sentiment: 64% positive (score: +0.28)                     │
+│    • Positive posts: 85.2% (94 total)                                   │
+│    • Market odds: increased by 0.02% (minimal movement)                 │
+│                                                                          │
+│  Category: Tech | Detected: 2026-02-05 10:29:45                        │
+│                                                                          │
+╰──────────────────────────────────────────────────────────────────────────╯
+
+╭──────────────────────────────────────────────────────────────────────────╮
+│                 RANK #3 - Confidence: 74/100                             │
+│                    Historical Pattern Deviation                          │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  Contract: Will inflation rate be below 3% by March 2026?               │
+│                                                                          │
+│  Current Odds: YES 78.0% / NO 22.0%                                     │
+│  Implied Odds: 65.4%                                                    │
+│  Potential Edge: 12.6%                                                  │
+│                                                                          │
+│  Analysis:                                                              │
+│  Current odds (78%) deviate significantly from the historical average   │
+│  of 65.4% for this contract. The market is showing 2.8 standard         │
+│  deviations above the mean, suggesting potential overconfidence in YES  │
+│  outcome. Historical volatility patterns indicate odds typically        │
+│  regress toward the mean within 7-10 days.                              │
+│                                                                          │
+│  Evidence:                                                              │
+│    • Statistical deviation: 2.8 standard deviations                     │
+│    • Average sentiment: 58% positive (score: +0.16)                     │
+│                                                                          │
+│  Category: Finance | Detected: 2026-02-05 10:30:15                     │
+│                                                                          │
+╰──────────────────────────────────────────────────────────────────────────╯
+
+╭──────────────────────────────────────────────────────────────────────────╮
+│                 RANK #4 - Confidence: 68/100                             │
+│                    Sentiment-Probability Mismatch                        │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  Contract: Will Democrats win Senate majority in 2026 midterms?         │
+│                                                                          │
+│  Current Odds: YES 53.0% / NO 47.0%                                     │
+│  Implied Odds: 61.8%                                                    │
+│  Potential Edge: 8.8%                                                   │
+│                                                                          │
+│  Analysis:                                                              │
+│  Social media discussion shows 68% positive sentiment toward Democratic │
+│  prospects, while market odds remain near toss-up territory at 53%.     │
+│  Analysis of 203 posts reveals consistent optimism about voter turnout  │
+│  and polling data, suggesting market may be underpricing the likelihood.│
+│                                                                          │
+│  Evidence:                                                              │
+│    • Average sentiment: 68% positive (score: +0.36)                     │
+│    • Positive posts: 67.5% (203 total)                                  │
+│                                                                          │
+│  Category: Politics | Detected: 2026-02-05 10:30:38                    │
+│                                                                          │
+╰──────────────────────────────────────────────────────────────────────────╯
+
+Showing top 4 of 4 detected gaps
+
+===============================================================================
+SYSTEM LOGS - VERBOSE OUTPUT
+===============================================================================
+
+2026-02-05 10:25:00 | INFO     | Starting new analysis cycle
+2026-02-05 10:25:01 | INFO     | Fetching active markets from Polymarket...
+2026-02-05 10:25:03 | INFO     | Collected 18 active contracts
+2026-02-05 10:25:04 | INFO     | Searching Twitter for relevant posts...
+2026-02-05 10:25:12 | INFO     | Found 127 tweets across 5 keywords
+2026-02-05 10:25:13 | INFO     | Searching Reddit for relevant posts...
+2026-02-05 10:25:18 | INFO     | Collected 94 Reddit posts from 3 subreddits
+2026-02-05 10:25:19 | INFO     | Total social posts collected: 221
+2026-02-05 10:25:20 | INFO     | Starting sentiment analysis...
+2026-02-05 10:25:45 | INFO     | Analyzed sentiment for 221 posts
+2026-02-05 10:25:46 | INFO     | Detecting pricing gaps...
+2026-02-05 10:25:47 | INFO     | Analyzing: Will Bitcoin reach $100k...
+2026-02-05 10:25:48 | INFO     | Found sentiment mismatch (confidence: 87)
+2026-02-05 10:25:49 | INFO     | Analyzing: Will SpaceX successfully launch...
+2026-02-05 10:25:50 | INFO     | Found information asymmetry (confidence: 82)
+2026-02-05 10:25:51 | INFO     | Analyzing: Will inflation rate be below 3%...
+2026-02-05 10:25:52 | INFO     | Found pattern deviation (confidence: 74)
+2026-02-05 10:26:05 | INFO     | Gap detection complete: 4 gaps identified
+2026-02-05 10:26:06 | INFO     | Generating report...
+2026-02-05 10:26:07 | INFO     | Report generated successfully
+
+===============================================================================
+CYCLE COMPLETE - Duration: 67.2s
+===============================================================================
+
+Next cycle will begin in 300 seconds (5 minutes)...
+
+===============================================================================
+DATABASE STATISTICS
+===============================================================================
+
+Contracts stored:         47
+Active contracts:         18
+Social posts collected:   1,284
+Sentiment analyses:       1,203
+Detected gaps (total):    23
+Unresolved gaps:          8
+System logs:              1,847
+
+===============================================================================
+API USAGE (if applicable)
+===============================================================================
+
+OpenAI API:
+  - Calls made: 28
+  - Tokens used: ~12,400
+  - Estimated cost: $0.18
+
+Twitter API:
+  - Calls made: 15
+  - Rate limit remaining: 85/100
+
+Reddit API:
+  - Calls made: 8
+  - Rate limit remaining: 52/60
+
+Polymarket API:
+  - Calls made: 5
+  - Rate limit remaining: 95/100
+
+===============================================================================
+
+Notes:
+- The system runs continuously, updating every 5 minutes (configurable)
+- Gaps are ranked by composite score (confidence + edge)
+- Historical data improves accuracy over time
+- Social media sentiment is aggregated from multiple sources
+- All data is stored in PostgreSQL for trend analysis
+- Web dashboard can be built on top of this data layer
+
+For detailed setup instructions, see SETUP_GUIDE.md
+For extending to web dashboard, see DEVELOPMENT.md
