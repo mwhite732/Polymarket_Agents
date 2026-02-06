@@ -1,7 +1,7 @@
 """Sentiment Analysis Agent - Analyzes social media sentiment using LLM."""
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Dict, List, Optional
 from uuid import UUID
@@ -14,6 +14,12 @@ from ..database.models import SocialPost, SentimentAnalysis, Contract
 from ..utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Minimum posts required to bother analyzing a contract
+MIN_POSTS_FOR_ANALYSIS = 3
+
+# Number of posts to send per LLM call (keep small for 7b models)
+BATCH_SIZE = 5
 
 
 class SentimentAnalysisAgent:
@@ -56,58 +62,110 @@ class SentimentAnalysisAgent:
             llm=self.llm
         )
 
-    def analyze_posts_batch(self, post_ids: List[str], contract_id: str) -> List[Dict]:
+    def _invoke_llm(self, prompt: str) -> str:
+        """Call LLM and return the response text, handling provider differences."""
+        response = self.llm.invoke(prompt)
+        if hasattr(response, 'content'):
+            return response.content.strip()
+        elif isinstance(response, str):
+            return response.strip()
+        return str(response).strip()
+
+    @staticmethod
+    def _clean_json(text: str) -> str:
+        """Strip markdown code fences and repair common LLM JSON issues."""
+        import re
+
+        # Remove markdown code fences
+        if text.startswith('```'):
+            text = text.split('```')[1]
+            if text.startswith('json'):
+                text = text[4:]
+            text = text.strip()
+
+        # Remove any text before the first [ or {
+        first_bracket = min(
+            (text.find('[') if text.find('[') >= 0 else len(text)),
+            (text.find('{') if text.find('{') >= 0 else len(text))
+        )
+        if first_bracket < len(text):
+            text = text[first_bracket:]
+
+        # Remove trailing text after last ] or }
+        last_close = max(text.rfind(']'), text.rfind('}'))
+        if last_close >= 0:
+            text = text[:last_close + 1]
+
+        # Fix trailing commas before ] or }
+        text = re.sub(r',\s*([}\]])', r'\1', text)
+
+        return text
+
+    def _analyze_batch(self, contents: List[str]) -> List[Optional[Dict]]:
         """
-        Analyze sentiment for a batch of posts.
+        Analyze sentiment for a batch of posts in a single LLM call.
 
         Args:
-            post_ids: List of social post IDs (UUIDs as strings)
-            contract_id: Associated contract ID (UUID as string)
+            contents: List of post content strings (max ~10)
 
         Returns:
-            List of sentiment analysis results
+            List of sentiment dicts (same length as contents, None for failures)
         """
-        results = []
+        numbered = "\n".join(
+            f'Post {i+1}: "{c[:500]}"' for i, c in enumerate(contents)
+        )
+
+        prompt = f"""Analyze the sentiment of these {len(contents)} social media posts in the context of prediction markets.
+
+{numbered}
+
+For EACH post, determine:
+- sentiment_score: number from -1.0 (very bearish) to +1.0 (very bullish)
+- sentiment_label: "positive", "negative", or "neutral"
+- confidence: your confidence 0.0 to 1.0
+- topics: 2-3 key topics mentioned
+
+Respond with ONLY a valid JSON array of {len(contents)} objects (one per post, in order). No extra text.
+Example: [{{"sentiment_score": 0.5, "sentiment_label": "positive", "confidence": 0.8, "topics": ["topic1"]}}]
+"""
 
         try:
-            with self.db_manager.get_session() as session:
-                # Fetch posts
-                posts = session.query(SocialPost).filter(
-                    SocialPost.id.in_([UUID(pid) for pid in post_ids])
-                ).all()
+            result_text = self._invoke_llm(prompt)
+            result_text = self._clean_json(result_text)
 
-                # Batch posts for efficiency
-                batch_size = self.settings.sentiment_batch_size
-                for i in range(0, len(posts), batch_size):
-                    batch = posts[i:i + batch_size]
+            parsed = json.loads(result_text)
 
-                    # Analyze each post in batch
-                    for post in batch:
-                        sentiment = self._analyze_single_post(post.content)
+            if not isinstance(parsed, list):
+                parsed = [parsed]
 
-                        if sentiment:
-                            # Store in database
-                            analysis = SentimentAnalysis(
-                                post_id=post.id,
-                                contract_id=UUID(contract_id),
-                                sentiment_score=sentiment['score'],
-                                sentiment_label=sentiment['label'],
-                                confidence=sentiment['confidence'],
-                                topics=sentiment.get('topics', [])
-                            )
-                            session.add(analysis)
-                            results.append(sentiment)
+            results = []
+            for item in parsed[:len(contents)]:
+                try:
+                    results.append({
+                        'score': Decimal(str(max(-1.0, min(1.0, float(item['sentiment_score']))))),
+                        'label': item['sentiment_label'].lower(),
+                        'confidence': Decimal(str(max(0.0, min(1.0, float(item['confidence']))))),
+                        'topics': item.get('topics', [])[:5]
+                    })
+                except (KeyError, ValueError, TypeError):
+                    results.append(None)
 
-                session.commit()
+            # Pad with None if LLM returned fewer items than expected
+            while len(results) < len(contents):
+                results.append(None)
 
+            return results
+
+        except json.JSONDecodeError as e:
+            logger.warning(f"Batch JSON parse failed ({e}), falling back to single-post analysis")
+            return [self._analyze_single_post(c) for c in contents]
         except Exception as e:
-            logger.error(f"Error analyzing posts batch: {e}")
-
-        return results
+            logger.error(f"Batch analysis error: {e}")
+            return [None] * len(contents)
 
     def _analyze_single_post(self, content: str) -> Optional[Dict]:
         """
-        Analyze sentiment of a single post using LLM.
+        Analyze sentiment of a single post using LLM (fallback for failed batches).
 
         Args:
             content: Post content text
@@ -116,45 +174,29 @@ class SentimentAnalysisAgent:
             Sentiment analysis result dictionary
         """
         try:
-            # Create prompt for sentiment analysis
             prompt = f"""Analyze the sentiment of this social media post in the context of prediction markets.
 
-Post: "{content}"
+Post: "{content[:500]}"
 
 Provide a JSON response with:
 1. sentiment_score: A number from -1.0 (very negative/bearish) to +1.0 (very positive/bullish)
 2. sentiment_label: One of "positive", "negative", or "neutral"
 3. confidence: Your confidence in this analysis (0.0 to 1.0)
-4. topics: A list of 2-3 key topics or themes mentioned (e.g., ["bitcoin", "regulation"])
-
-Consider:
-- Bullish signals: optimism, positive predictions, supportive language
-- Bearish signals: pessimism, negative predictions, critical language
-- Neutral: factual statements, questions, unclear sentiment
+4. topics: A list of 2-3 key topics or themes mentioned
 
 Respond with ONLY valid JSON, no additional text.
 """
 
-            # Call LLM
-            response = self.llm.invoke(prompt)
-            result_text = response.content.strip()
-
-            # Parse JSON response
-            # Remove markdown code blocks if present
-            if result_text.startswith('```'):
-                result_text = result_text.split('```')[1]
-                if result_text.startswith('json'):
-                    result_text = result_text[4:]
-                result_text = result_text.strip()
+            result_text = self._invoke_llm(prompt)
+            result_text = self._clean_json(result_text)
 
             sentiment = json.loads(result_text)
 
-            # Validate and normalize
             return {
                 'score': Decimal(str(max(-1.0, min(1.0, float(sentiment['sentiment_score']))))),
                 'label': sentiment['sentiment_label'].lower(),
                 'confidence': Decimal(str(max(0.0, min(1.0, float(sentiment['confidence']))))),
-                'topics': sentiment.get('topics', [])[:5]  # Limit topics
+                'topics': sentiment.get('topics', [])[:5]
             }
 
         except json.JSONDecodeError as e:
@@ -187,13 +229,14 @@ Respond with ONLY valid JSON, no additional text.
                     logger.warning(f"Contract not found: {contract_id}")
                     return {}
 
-                # Get recent social posts (last 24 hours)
+                # Get recent social posts
+                from sqlalchemy import any_
+                contract_uuid = UUID(contract_id)
                 posts = session.query(SocialPost).filter(
-                    SocialPost.related_contracts.contains([UUID(contract_id)])
+                    contract_uuid == any_(SocialPost.related_contracts)
                 ).order_by(SocialPost.posted_at.desc()).limit(200).all()
 
                 if not posts:
-                    logger.info(f"No social posts found for contract {contract_id}")
                     return {
                         'contract_id': contract_id,
                         'total_posts': 0,
@@ -201,38 +244,46 @@ Respond with ONLY valid JSON, no additional text.
                         'sentiment_distribution': {'positive': 0, 'negative': 0, 'neutral': 0}
                     }
 
-                # Check which posts need analysis
-                posts_to_analyze = []
-                for post in posts:
-                    existing = session.query(SentimentAnalysis).filter(
-                        SentimentAnalysis.post_id == post.id,
-                        SentimentAnalysis.contract_id == UUID(contract_id)
-                    ).first()
+                # Filter to only posts that haven't been analyzed yet
+                analyzed_ids = set(
+                    row[0] for row in session.query(SentimentAnalysis.post_id).filter(
+                        SentimentAnalysis.contract_id == contract_uuid
+                    ).all()
+                )
+                posts_to_analyze = [p for p in posts if p.id not in analyzed_ids]
 
-                    if not existing:
-                        posts_to_analyze.append(post)
+                # Skip if too few total posts for meaningful analysis
+                if len(posts) < MIN_POSTS_FOR_ANALYSIS and not analyzed_ids:
+                    logger.info(f"Skipping contract {contract_id}: only {len(posts)} posts (need {MIN_POSTS_FOR_ANALYSIS})")
+                    return {}
 
-                # Analyze new posts
+                # Batch-analyze new posts
                 if posts_to_analyze:
-                    logger.info(f"Analyzing {len(posts_to_analyze)} new posts...")
-                    for post in posts_to_analyze:
-                        sentiment = self._analyze_single_post(post.content)
-                        if sentiment:
-                            analysis = SentimentAnalysis(
-                                post_id=post.id,
-                                contract_id=UUID(contract_id),
-                                sentiment_score=sentiment['score'],
-                                sentiment_label=sentiment['label'],
-                                confidence=sentiment['confidence'],
-                                topics=sentiment.get('topics', [])
-                            )
-                            session.add(analysis)
+                    logger.info(f"Analyzing {len(posts_to_analyze)} new posts in batches of {BATCH_SIZE}...")
+
+                    for i in range(0, len(posts_to_analyze), BATCH_SIZE):
+                        batch_posts = posts_to_analyze[i:i + BATCH_SIZE]
+                        batch_contents = [p.content for p in batch_posts]
+
+                        sentiments = self._analyze_batch(batch_contents)
+
+                        for post, sentiment in zip(batch_posts, sentiments):
+                            if sentiment:
+                                analysis = SentimentAnalysis(
+                                    post_id=post.id,
+                                    contract_id=contract_uuid,
+                                    sentiment_score=sentiment['score'],
+                                    sentiment_label=sentiment['label'],
+                                    confidence=sentiment['confidence'],
+                                    topics=sentiment.get('topics', [])
+                                )
+                                session.add(analysis)
 
                     session.commit()
 
-                # Aggregate sentiment
+                # Aggregate all sentiment (existing + new)
                 analyses = session.query(SentimentAnalysis).filter(
-                    SentimentAnalysis.contract_id == UUID(contract_id)
+                    SentimentAnalysis.contract_id == contract_uuid
                 ).all()
 
                 if not analyses:
@@ -280,7 +331,7 @@ Respond with ONLY valid JSON, no additional text.
 
     def analyze_all_active_contracts(self) -> List[Dict]:
         """
-        Analyze sentiment for all active contracts.
+        Analyze sentiment for all active, non-expired contracts.
 
         Returns:
             List of sentiment analysis results per contract
@@ -291,9 +342,11 @@ Respond with ONLY valid JSON, no additional text.
 
         try:
             with self.db_manager.get_session() as session:
-                # Get active contracts
+                # Get active contracts that haven't expired yet
+                now = datetime.now(timezone.utc)
                 contracts = session.query(Contract).filter(
-                    Contract.active == True
+                    Contract.active == True,
+                    (Contract.end_date > now) | (Contract.end_date == None)
                 ).limit(self.settings.max_contracts_per_cycle).all()
 
                 for contract in contracts:

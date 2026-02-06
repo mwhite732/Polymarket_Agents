@@ -1,6 +1,6 @@
 """Data Collection Agent - Fetches market and social media data."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List
 from uuid import UUID
 
@@ -36,6 +36,24 @@ class DataCollectionAgent:
         self.polymarket = PolymarketAPI()
         self.twitter = TwitterScraper()
         self.reddit = RedditScraper()
+        self.rss_news = None
+
+        # Initialize RSS news scraper (always available, no API keys needed)
+        try:
+            from ..services import RSSNewsScraper
+            self.rss_news = RSSNewsScraper()
+            logger.info("RSS News scraper initialized (FREE news source)")
+        except Exception as e:
+            logger.warning(f"Could not initialize RSS news scraper: {e}")
+
+        # Initialize Bluesky scraper (always available, no API keys needed)
+        self.bluesky = None
+        try:
+            from ..services import BlueskyScraper
+            self.bluesky = BlueskyScraper()
+            logger.info("Bluesky scraper initialized (FREE social media source)")
+        except Exception as e:
+            logger.warning(f"Could not initialize Bluesky scraper: {e}")
 
         logger.info("Data Collection Agent initialized")
 
@@ -66,9 +84,11 @@ class DataCollectionAgent:
         logger.info("Starting market data collection...")
 
         try:
-            # Fetch active markets from Polymarket
+            # Fetch more markets than needed since many will be expired
+            # and filtered out. Fetch 5x the target to ensure enough remain.
+            fetch_limit = self.settings.max_contracts_per_cycle * 5
             markets = self.polymarket.get_active_markets(
-                limit=self.settings.max_contracts_per_cycle
+                limit=fetch_limit
             )
 
             contracts_data = []
@@ -79,6 +99,12 @@ class DataCollectionAgent:
                     contract_data = self.polymarket.parse_market_to_contract(market)
                     if not contract_data.get('contract_id'):
                         continue
+
+                    # Skip expired contracts
+                    if contract_data.get('end_date'):
+                        if contract_data['end_date'] < datetime.now(timezone.utc):
+                            logger.debug(f"Skipping expired contract: {contract_data.get('question', 'Unknown')[:50]}")
+                            continue
 
                     # Check if contract exists in database
                     existing = session.query(Contract).filter(
@@ -195,6 +221,45 @@ class DataCollectionAgent:
                 except Exception as e:
                     logger.error(f"Error collecting Reddit data: {e}")
 
+            # Collect Bluesky data (FREE, always available)
+            if self.bluesky and self.bluesky.enabled:
+                try:
+                    for keyword in keywords[:3]:
+                        bsky_posts = self.bluesky.search_posts(
+                            query=keyword,
+                            max_results=25,
+                            hours_back=hours_back
+                        )
+                        posts.extend(bsky_posts)
+                    logger.info(f"Collected {len([p for p in posts if p.get('platform') == 'bluesky'])} Bluesky posts")
+                except Exception as e:
+                    logger.error(f"Error collecting Bluesky data: {e}")
+
+            # Collect RSS news data (FREE, always available)
+            if self.rss_news:
+                try:
+                    news_articles = self.rss_news.search_news(
+                        keywords=keywords[:5],  # Use more keywords for news
+                        hours_back=hours_back
+                    )
+
+                    # Convert news articles to social post format
+                    for article in news_articles[:20]:  # Limit to 20 articles
+                        posts.append({
+                            'post_id': f"rss_{hash(article['url'])}",  # Generate unique ID
+                            'platform': 'news_rss',
+                            'author': article['author'],
+                            'content': f"{article['title']}: {article['content']}",
+                            'posted_at': article['published_at'],  # Fixed: changed from created_at to posted_at
+                            'url': article['url'],
+                            'engagement_score': 50,  # Default score for news
+                            'source_name': article['source']
+                        })
+
+                    logger.info(f"Collected {len(news_articles)} news articles from RSS feeds")
+                except Exception as e:
+                    logger.error(f"Error collecting RSS news data: {e}")
+
             # Store posts in database
             if posts:
                 stored_posts = self._store_social_posts(posts, contract_id)
@@ -209,6 +274,9 @@ class DataCollectionAgent:
         """
         Store social media posts in database.
 
+        Deduplicates posts by post_id before inserting and handles
+        conflicts gracefully so one bad post doesn't fail the batch.
+
         Args:
             posts: List of post dictionaries
             contract_id: Associated contract UUID
@@ -218,35 +286,50 @@ class DataCollectionAgent:
         """
         stored_posts = []
 
+        # Deduplicate incoming posts by post_id
+        seen = set()
+        unique_posts = []
+        for p in posts:
+            pid = p.get('post_id')
+            if pid and pid not in seen:
+                seen.add(pid)
+                unique_posts.append(p)
+
         try:
             with self.db_manager.get_session() as session:
-                for post_data in posts:
-                    # Check if post already exists
-                    existing = session.query(SocialPost).filter(
-                        SocialPost.post_id == post_data['post_id']
-                    ).first()
+                for post_data in unique_posts:
+                    try:
+                        # Check if post already exists
+                        existing = session.query(SocialPost).filter(
+                            SocialPost.post_id == post_data['post_id']
+                        ).first()
 
-                    if existing:
-                        # Update related contracts if needed
-                        if contract_id not in [str(c) for c in (existing.related_contracts or [])]:
-                            contracts_list = list(existing.related_contracts or [])
-                            contracts_list.append(UUID(contract_id))
-                            existing.related_contracts = contracts_list
-                        continue
+                        if existing:
+                            # Update related contracts if needed
+                            if contract_id not in [str(c) for c in (existing.related_contracts or [])]:
+                                contracts_list = list(existing.related_contracts or [])
+                                contracts_list.append(UUID(contract_id))
+                                existing.related_contracts = contracts_list
+                            continue
 
-                    # Create new post
-                    post = SocialPost(
-                        post_id=post_data['post_id'],
-                        platform=post_data['platform'],
-                        author=post_data.get('author'),
-                        content=post_data['content'],
-                        url=post_data.get('url'),
-                        engagement_score=post_data.get('engagement_score', 0),
-                        posted_at=post_data['posted_at'],
-                        related_contracts=[UUID(contract_id)]
-                    )
-                    session.add(post)
-                    stored_posts.append(post_data)
+                        # Create new post
+                        post = SocialPost(
+                            post_id=post_data['post_id'],
+                            platform=post_data['platform'],
+                            author=post_data.get('author'),
+                            content=post_data['content'],
+                            url=post_data.get('url'),
+                            engagement_score=post_data.get('engagement_score', 0),
+                            posted_at=post_data['posted_at'],
+                            related_contracts=[UUID(contract_id)]
+                        )
+                        session.add(post)
+                        session.flush()  # Flush each post so duplicates don't poison the batch
+                        stored_posts.append(post_data)
+
+                    except Exception as e:
+                        session.rollback()
+                        logger.debug(f"Skipped post {post_data.get('post_id', '?')}: {e}")
 
                 session.commit()
 
@@ -258,24 +341,111 @@ class DataCollectionAgent:
     @staticmethod
     def _extract_keywords(question: str) -> List[str]:
         """
-        Extract search keywords from question.
+        Extract meaningful search keywords from a Polymarket question.
+
+        Filters out stop words, numbers, price tokens, and generic terms
+        to produce keywords that will return relevant social media results.
 
         Args:
             question: Market question
 
         Returns:
-            List of keywords
+            List of keywords (most specific first)
         """
-        # Simple extraction - remove common words
-        common_words = {
-            'will', 'the', 'be', 'in', 'to', 'of', 'and', 'or', 'a', 'an',
-            'by', 'on', 'at', 'for', 'with', 'from', 'have', 'has'
+        import re
+
+        stop_words = {
+            # Determiners / articles
+            'the', 'a', 'an', 'this', 'that', 'these', 'those',
+            # Prepositions
+            'in', 'on', 'at', 'to', 'for', 'of', 'by', 'with', 'from',
+            'into', 'through', 'during', 'before', 'after', 'above', 'below',
+            'between', 'under', 'over', 'about', 'against', 'within',
+            # Conjunctions
+            'and', 'or', 'but', 'nor', 'yet', 'so',
+            # Pronouns
+            'he', 'she', 'it', 'they', 'them', 'his', 'her', 'its', 'their',
+            'who', 'whom', 'which', 'what', 'whose',
+            # Common verbs
+            'will', 'would', 'could', 'should', 'shall', 'may', 'might',
+            'can', 'does', 'did', 'has', 'have', 'had', 'been', 'being',
+            'was', 'were', 'are', 'is', 'be', 'do', 'get', 'got',
+            'become', 'reach', 'exceed', 'fall', 'rise', 'drop', 'hit',
+            'remain', 'stay', 'happen', 'occur', 'take', 'make', 'go',
+            'win', 'lose', 'pass', 'fail', 'sign', 'announce', 'report',
+            'increase', 'decrease', 'collect', 'receive', 'give', 'keep',
+            'hold', 'release', 'close', 'open', 'set', 'run', 'lead',
+            'move', 'change', 'turn', 'show', 'come', 'leave', 'call',
+            'pay', 'play', 'put', 'bring', 'use', 'try', 'ask', 'tell',
+            'say', 'said', 'know', 'think', 'see', 'want', 'need', 'look',
+            'find', 'give', 'work', 'seem', 'feel', 'provide', 'include',
+            'consider', 'appear', 'allow', 'meet', 'add', 'expect',
+            'continue', 'create', 'offer', 'serve', 'cause', 'require',
+            'follow', 'agree', 'support', 'produce', 'lose', 'return',
+            # Generic nouns (too broad for useful search)
+            'yes', 'no', 'more', 'less', 'than',
+            'least', 'most', 'end', 'start', 'begin', 'next', 'last', 'first',
+            'many', 'much', 'some', 'any', 'each', 'every', 'all',
+            'other', 'another', 'such', 'only', 'also', 'just',
+            'how', 'when', 'where', 'why', 'whether',
+            'per', 'cost', 'price', 'total', 'number', 'amount',
+            'people', 'person', 'year', 'years', 'month', 'months',
+            'day', 'days', 'week', 'weeks', 'time', 'date',
+            'level', 'rate', 'share', 'point', 'part', 'place',
+            'case', 'group', 'company', 'system', 'program', 'question',
+            'government', 'world', 'area', 'state', 'states',
+            'market', 'markets', 'billion', 'million', 'trillion',
+            'average', 'high', 'low', 'new', 'old', 'long', 'short',
+            'revenue', 'value', 'growth', 'result', 'report', 'data',
+            'percent', 'currently', 'based', 'likely', 'according',
+            'announced', 'expected', 'still', 'even', 'well', 'back',
+            'official', 'officially', 'current', 'annual', 'daily',
+            'approximately', 'roughly', 'estimated', 'around',
         }
 
-        words = question.lower().replace('?', '').replace(',', '').split()
-        keywords = [w for w in words if len(w) > 3 and w not in common_words]
+        # Clean the question
+        text = question.replace('?', '').replace(',', '').replace("'s", '')
 
-        return keywords[:5]
+        # Remove dollar amounts, percentages, and number ranges
+        text = re.sub(r'\$[\d,.]+\+?', '', text)
+        text = re.sub(r'[\d,.]+%', '', text)
+        text = re.sub(r'[\d,.]+-[\d,.]+', '', text)
+        text = re.sub(r'\b\d{1,3}(,\d{3})+\b', '', text)  # e.g. 1,750,000
+
+        words = text.split()
+
+        # Keep capitalized words (proper nouns) with priority
+        proper_nouns = []
+        regular_words = []
+        for w in words:
+            clean = re.sub(r'[^a-zA-Z]', '', w)
+            if len(clean) < 3:
+                continue
+            if clean.lower() in stop_words:
+                continue
+            if w[0].isupper():
+                proper_nouns.append(clean)
+            else:
+                regular_words.append(clean.lower())
+
+        # Proper nouns first (Trump, Bitcoin, etc.), then other meaningful words
+        keywords = proper_nouns + regular_words
+
+        # Deduplicate while preserving order
+        seen = set()
+        unique = []
+        for kw in keywords:
+            kw_lower = kw.lower()
+            if kw_lower not in seen:
+                seen.add(kw_lower)
+                unique.append(kw)
+
+        # If no proper nouns were found and only 1 generic word remains,
+        # the keywords aren't specific enough for useful search results
+        if not proper_nouns and len(unique) <= 1:
+            return []
+
+        return unique[:5]
 
     def create_collection_task(self) -> Task:
         """

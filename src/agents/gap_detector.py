@@ -1,7 +1,7 @@
 """Gap Detection Agent - Identifies pricing inefficiencies in prediction markets."""
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Dict, List, Optional
 from uuid import UUID
@@ -12,6 +12,8 @@ from sqlalchemy import func
 from ..config import get_settings, get_llm
 from ..database import get_db_manager
 from ..database.models import Contract, DetectedGap, SentimentAnalysis, HistoricalOdds
+from ..services.kalshi_api import KalshiAPI
+from ..services.manifold_api import ManifoldAPI
 from ..utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -24,7 +26,7 @@ class GapDetectionAgent:
     Identifies four types of gaps:
     1. Sentiment-Probability Mismatches: Market odds don't align with social sentiment
     2. Information Asymmetry: New information not yet reflected in prices
-    3. Cross-Market Arbitrage: Pricing inconsistencies (future enhancement)
+    3. Cross-Market Arbitrage: Pricing inconsistencies across Kalshi and Manifold
     4. Historical Pattern Deviations: Unusual odds movements compared to history
     """
 
@@ -36,7 +38,46 @@ class GapDetectionAgent:
         # Initialize LLM (OpenAI or Ollama based on config)
         self.llm = get_llm()
 
+        # Initialize cross-market API clients for arbitrage detection
+        self.kalshi_api = KalshiAPI()
+        self.manifold_api = ManifoldAPI()
+
         logger.info(f"Gap Detection Agent initialized with {self.settings.llm_provider}")
+
+    def _invoke_llm(self, prompt: str) -> str:
+        """Call LLM and return the response text, handling provider differences."""
+        response = self.llm.invoke(prompt)
+        if hasattr(response, 'content'):
+            return response.content.strip()
+        elif isinstance(response, str):
+            return response.strip()
+        return str(response).strip()
+
+    @staticmethod
+    def _clean_json(text: str) -> str:
+        """Strip markdown code fences and repair common LLM JSON issues."""
+        import re
+
+        if text.startswith('```'):
+            text = text.split('```')[1]
+            if text.startswith('json'):
+                text = text[4:]
+            text = text.strip()
+
+        first_bracket = min(
+            (text.find('[') if text.find('[') >= 0 else len(text)),
+            (text.find('{') if text.find('{') >= 0 else len(text))
+        )
+        if first_bracket < len(text):
+            text = text[first_bracket:]
+
+        last_close = max(text.rfind(']'), text.rfind('}'))
+        if last_close >= 0:
+            text = text[:last_close + 1]
+
+        text = re.sub(r',\s*([}\]])', r'\1', text)
+
+        return text
 
     def create_crewai_agent(self) -> Agent:
         """
@@ -180,7 +221,7 @@ class GapDetectionAgent:
                     return None
 
                 # Get very recent sentiment (last 3 hours) vs older (3-6 hours ago)
-                now = datetime.utcnow()
+                now = datetime.now(timezone.utc)
                 recent_cutoff = now - timedelta(hours=3)
                 older_cutoff = now - timedelta(hours=6)
 
@@ -394,8 +435,7 @@ Provide a 2-3 sentence explanation that:
 Be specific and actionable. Do not use phrases like "might" or "could be" - be direct.
 """
 
-            response = self.llm.invoke(prompt)
-            explanation = response.content.strip()
+            explanation = self._invoke_llm(prompt)
 
             return explanation
 
@@ -403,6 +443,223 @@ Be specific and actionable. Do not use phrases like "might" or "could be" - be d
             logger.error(f"Error generating explanation: {e}")
             # Fallback explanation
             return f"{gap_type.replace('_', ' ').title()} detected. Market odds at {market_odds:.1%}."
+
+    def _extract_search_query(self, question: str) -> str:
+        """
+        Extract a concise search query from a Polymarket contract question.
+
+        Removes filler words and keeps the core subject for cross-platform search.
+        """
+        stop_words = {
+            'will', 'the', 'be', 'in', 'on', 'by', 'a', 'an', 'of', 'to',
+            'for', 'is', 'at', 'or', 'and', 'this', 'that', 'with', 'from',
+            'before', 'after', 'during', 'than', 'more', 'less', 'over',
+            'under', 'between', 'above', 'below', 'how', 'many', 'much',
+            'what', 'which', 'who', 'when', 'where', 'does', 'do', 'did',
+            'has', 'have', 'had', 'been', 'being', 'are', 'was', 'were',
+            'would', 'could', 'should', 'may', 'might', 'can', 'shall',
+        }
+
+        # Remove question mark and common punctuation
+        cleaned = question.replace('?', '').replace(',', ' ').replace("'s", '')
+        words = cleaned.split()
+
+        # Keep significant words (proper nouns, key terms)
+        significant = []
+        for word in words:
+            lower = word.lower()
+            if lower not in stop_words and len(word) > 1:
+                significant.append(word)
+
+        # Return first 4-5 significant words as the search query
+        return ' '.join(significant[:5])
+
+    def _match_markets_with_llm(self, polymarket_question: str, candidates: List[Dict]) -> List[Dict]:
+        """
+        Use LLM to determine which candidate markets match the Polymarket question.
+
+        Args:
+            polymarket_question: The Polymarket contract question
+            candidates: List of candidate markets from other platforms
+
+        Returns:
+            List of confirmed matching markets with match_confidence
+        """
+        if not candidates:
+            return []
+
+        # Limit to top 8 candidates to keep prompt small for local LLMs
+        candidates = candidates[:8]
+
+        numbered = "\n".join(
+            f'{i+1}. [{c["platform"]}] "{c["question"]}" (probability: {c["probability"]:.1%})'
+            for i, c in enumerate(candidates)
+        )
+
+        prompt = f"""Determine which of these prediction markets are about the SAME event as the Polymarket question.
+
+Polymarket question: "{polymarket_question}"
+
+Candidate markets from other platforms:
+{numbered}
+
+For each candidate, respond with ONLY a valid JSON array. Each element should have:
+- "index": the candidate number (1-based)
+- "match": true or false
+- "confidence": 0.0 to 1.0 (how confident this is the same event)
+
+Only mark as match=true if the markets are about essentially the same question/outcome.
+Respond with ONLY the JSON array, no extra text.
+"""
+
+        try:
+            result_text = self._invoke_llm(prompt)
+            result_text = self._clean_json(result_text)
+
+            parsed = json.loads(result_text)
+            if not isinstance(parsed, list):
+                parsed = [parsed]
+
+            matches = []
+            for item in parsed:
+                try:
+                    if item.get("match") and item.get("confidence", 0) >= 0.6:
+                        idx = int(item["index"]) - 1
+                        if 0 <= idx < len(candidates):
+                            candidate = candidates[idx].copy()
+                            candidate["match_confidence"] = float(item["confidence"])
+                            matches.append(candidate)
+                except (KeyError, ValueError, TypeError):
+                    continue
+
+            return matches
+
+        except json.JSONDecodeError as e:
+            logger.warning(f"Cross-market match JSON parse failed: {e}")
+            return []
+        except Exception as e:
+            logger.error(f"Error in LLM market matching: {e}")
+            return []
+
+    def detect_cross_market_arbitrage(self, contract_id: str) -> List[Dict]:
+        """
+        Detect cross-market arbitrage by comparing Polymarket odds against
+        Kalshi and Manifold Markets.
+
+        Args:
+            contract_id: Contract UUID as string
+
+        Returns:
+            List of arbitrage gap dicts (one per platform with price discrepancy)
+        """
+        if not self.settings.enable_arbitrage_detection:
+            return []
+
+        try:
+            with self.db_manager.get_session() as session:
+                contract = session.query(Contract).filter(
+                    Contract.id == UUID(contract_id)
+                ).first()
+
+                if not contract or not contract.current_yes_odds:
+                    return []
+
+                polymarket_prob = float(contract.current_yes_odds)
+                question = contract.question
+                search_query = self._extract_search_query(question)
+
+                if not search_query or len(search_query) < 3:
+                    return []
+
+                logger.debug(f"Arbitrage search for: '{search_query}' (from: {question[:60]}...)")
+
+                # Search competitor platforms
+                all_candidates = []
+
+                kalshi_markets = self.kalshi_api.search_markets(search_query, limit=10)
+                all_candidates.extend(kalshi_markets)
+
+                manifold_markets = self.manifold_api.search_markets(search_query, limit=10)
+                all_candidates.extend(manifold_markets)
+
+                if not all_candidates:
+                    return []
+
+                # Use LLM to confirm matches
+                confirmed_matches = self._match_markets_with_llm(question, all_candidates)
+
+                if not confirmed_matches:
+                    return []
+
+                # Check for arbitrage on each confirmed match
+                gaps = []
+                for match in confirmed_matches:
+                    competitor_prob = match["probability"]
+                    edge = abs(polymarket_prob - competitor_prob)
+
+                    if edge < self.settings.arbitrage_min_edge:
+                        continue
+
+                    # Determine direction
+                    if polymarket_prob < competitor_prob:
+                        direction = "bullish"
+                        explanation_hint = f"Polymarket prices YES at {polymarket_prob:.1%} while {match['platform'].title()} prices it at {competitor_prob:.1%}"
+                    else:
+                        direction = "bearish"
+                        explanation_hint = f"Polymarket prices YES at {polymarket_prob:.1%} while {match['platform'].title()} prices it at {competitor_prob:.1%}"
+
+                    # Confidence based on edge size and match confidence
+                    edge_factor = min(edge / 0.3, 1.0) * 50
+                    match_factor = match.get("match_confidence", 0.7) * 30
+                    base_confidence = 20
+                    confidence = int(edge_factor + match_factor + base_confidence)
+
+                    # Generate explanation
+                    explanation = self._generate_gap_explanation(
+                        contract=contract,
+                        gap_type="arbitrage",
+                        market_odds=polymarket_prob,
+                        implied_odds=competitor_prob,
+                        sentiment_data={
+                            "competitor_platform": match["platform"],
+                            "competitor_question": match["question"],
+                            "competitor_probability": competitor_prob,
+                            "direction": direction,
+                            "edge": round(edge, 3),
+                        }
+                    )
+
+                    gaps.append({
+                        "contract_id": contract_id,
+                        "gap_type": "arbitrage",
+                        "confidence_score": confidence,
+                        "explanation": explanation,
+                        "market_odds": contract.current_yes_odds,
+                        "implied_odds": Decimal(str(round(competitor_prob, 4))),
+                        "edge_percentage": Decimal(str(round(edge * 100, 2))),
+                        "evidence": {
+                            "competitor_platform": match["platform"],
+                            "competitor_market_id": match["market_id"],
+                            "competitor_question": match["question"],
+                            "competitor_probability": round(competitor_prob, 4),
+                            "competitor_url": match.get("url", ""),
+                            "match_confidence": match.get("match_confidence", 0),
+                            "direction": direction,
+                            "polymarket_probability": round(polymarket_prob, 4),
+                        }
+                    })
+
+                    logger.info(
+                        f"Arbitrage found: {question[:50]}... | "
+                        f"Polymarket={polymarket_prob:.1%} vs {match['platform']}={competitor_prob:.1%} "
+                        f"(edge={edge:.1%})"
+                    )
+
+                return gaps
+
+        except Exception as e:
+            logger.error(f"Error detecting cross-market arbitrage: {e}")
+            return []
 
     def detect_all_gaps(self, contract_id: str) -> List[Dict]:
         """
@@ -431,7 +688,9 @@ Be specific and actionable. Do not use phrases like "might" or "could be" - be d
         if gap:
             gaps.append(gap)
 
-        # TODO: Cross-market arbitrage (future enhancement)
+        # Cross-market arbitrage
+        arbitrage_gaps = self.detect_cross_market_arbitrage(contract_id)
+        gaps.extend(arbitrage_gaps)
 
         return gaps
 
@@ -448,9 +707,11 @@ Be specific and actionable. Do not use phrases like "might" or "could be" - be d
 
         try:
             with self.db_manager.get_session() as session:
-                # Get active contracts
+                # Get active contracts that haven't expired yet
+                now = datetime.now(timezone.utc)
                 contracts = session.query(Contract).filter(
-                    Contract.active == True
+                    Contract.active == True,
+                    (Contract.end_date > now) | (Contract.end_date == None)
                 ).all()
 
                 for contract in contracts:

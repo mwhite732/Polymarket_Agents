@@ -100,34 +100,48 @@ class PolymarketAPI:
 
     def get_active_markets(self, limit: int = 100) -> List[Dict]:
         """
-        Fetch active prediction markets.
+        Fetch active prediction markets with pagination.
 
         Args:
-            limit: Maximum number of markets to fetch
+            limit: Maximum total number of markets to fetch
 
         Returns:
             List of market dictionaries
         """
         try:
-            # Use Gamma API to get markets
             url = f"{self.gamma_url}/markets"
-            params = {
-                'closed': 'false',
-                'limit': min(limit, 100),  # API max
-                'offset': 0
-            }
+            all_markets = []
+            page_size = 100  # API max per request
+            offset = 0
 
-            logger.info(f"Fetching active markets (limit={limit})")
-            response = self._make_request(url, params)
+            logger.info(f"Fetching active markets (target={limit})")
 
-            markets = response if isinstance(response, list) else response.get('data', [])
-            logger.info(f"Fetched {len(markets)} active markets")
+            while len(all_markets) < limit:
+                params = {
+                    'closed': 'false',
+                    'limit': min(page_size, limit - len(all_markets)),
+                    'offset': offset
+                }
 
-            return markets
+                response = self._make_request(url, params)
+                markets = response if isinstance(response, list) else response.get('data', [])
+
+                if not markets:
+                    break  # No more results
+
+                all_markets.extend(markets)
+                offset += len(markets)
+
+                # If we got fewer than page_size, there are no more pages
+                if len(markets) < page_size:
+                    break
+
+            logger.info(f"Fetched {len(all_markets)} active markets across {offset // page_size + 1} page(s)")
+            return all_markets
 
         except Exception as e:
             logger.error(f"Error fetching active markets: {e}")
-            return []
+            return all_markets if all_markets else []
 
     def get_market_details(self, condition_id: str) -> Optional[Dict]:
         """

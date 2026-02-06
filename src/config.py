@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     twitter_access_token: Optional[str] = Field(default=None, description='Twitter access token')
     twitter_access_secret: Optional[str] = Field(default=None, description='Twitter access secret')
 
+    # Bluesky API Configuration (Free - just needs a Bluesky account)
+    bluesky_handle: Optional[str] = Field(default=None, description='Bluesky handle (e.g. user.bsky.social)')
+    bluesky_app_password: Optional[str] = Field(default=None, description='Bluesky app password (Settings > App Passwords)')
+
     # Reddit API Configuration (Optional)
     reddit_client_id: Optional[str] = Field(default=None, description='Reddit client ID')
     reddit_client_secret: Optional[str] = Field(default=None, description='Reddit client secret')
@@ -120,6 +124,18 @@ class Settings(BaseSettings):
         default=60,
         description='Reddit API requests per minute'
     )
+    bluesky_rate_limit: int = Field(
+        default=30,
+        description='Bluesky API requests per minute'
+    )
+    kalshi_rate_limit: int = Field(
+        default=10,
+        description='Kalshi API requests per second'
+    )
+    manifold_rate_limit: int = Field(
+        default=30,
+        description='Manifold Markets API requests per minute'
+    )
 
     # Agent Configuration
     data_collection_lookback_hours: int = Field(
@@ -138,10 +154,19 @@ class Settings(BaseSettings):
         le=1.0,
         description='Minimum odds difference to flag'
     )
+    arbitrage_min_edge: float = Field(
+        default=0.10,
+        ge=0.0,
+        le=1.0,
+        description='Minimum cross-market price difference to flag as arbitrage'
+    )
 
     # Feature Flags
     enable_twitter: bool = Field(default=True, description='Enable Twitter data collection')
     enable_reddit: bool = Field(default=True, description='Enable Reddit data collection')
+    enable_bluesky: bool = Field(default=True, description='Enable Bluesky data collection (free, no API key)')
+    enable_kalshi: bool = Field(default=True, description='Enable Kalshi cross-market comparison')
+    enable_manifold: bool = Field(default=True, description='Enable Manifold Markets cross-market comparison')
     enable_historical_analysis: bool = Field(
         default=True,
         description='Enable historical pattern analysis'
@@ -181,6 +206,14 @@ class Settings(BaseSettings):
             self.reddit_client_secret
         )
 
+    @property
+    def has_bluesky_credentials(self) -> bool:
+        """Check if Bluesky credentials are configured."""
+        return bool(
+            self.bluesky_handle and
+            self.bluesky_app_password
+        )
+
     def validate_required_services(self):
         """Validate that at least basic services are configured."""
         # Validate LLM configuration
@@ -200,6 +233,12 @@ class Settings(BaseSettings):
         if self.enable_reddit and not self.has_reddit_credentials:
             print("WARNING: Reddit enabled but credentials not configured. Disabling Reddit.")
             self.enable_reddit = False
+
+        if self.enable_bluesky and not self.has_bluesky_credentials:
+            print("WARNING: Bluesky enabled but credentials not configured. Disabling Bluesky.")
+            print("  To enable: create a free account at bsky.app, then generate an app password")
+            print("  Add BLUESKY_HANDLE and BLUESKY_APP_PASSWORD to your .env file")
+            self.enable_bluesky = False
 
 
 # Global settings instance

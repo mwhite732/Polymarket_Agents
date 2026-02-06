@@ -330,7 +330,7 @@ def run_with_api_server():
 3. **Sentiment Analysis**
    - Aggregate sentiment by category
    - Topic trends over time
-   - Platform comparison (Twitter vs Reddit)
+   - Platform comparison (RSS vs Bluesky vs Twitter vs Reddit)
 
 4. **Performance Metrics**
    - Historical accuracy of gap predictions
@@ -413,13 +413,19 @@ sentiment_model = pipeline(
 )
 ```
 
-### 4. Multi-Exchange Support
+### 4. Multi-Exchange Support (Implemented)
+Cross-market arbitrage detection is now built in. The gap detector searches Kalshi and Manifold Markets for equivalent contracts and flags pricing discrepancies.
+
 ```python
-# Add other prediction markets
+# Already implemented in src/agents/gap_detector.py
 from src.services.kalshi_api import KalshiAPI
 from src.services.manifold_api import ManifoldAPI
 
-# Cross-market arbitrage detection
+# Usage: automatically runs as part of detect_all_gaps()
+# Configure in .env:
+#   ENABLE_KALSHI=true
+#   ENABLE_MANIFOLD=true
+#   ARBITRAGE_MIN_EDGE=0.10
 ```
 
 ## Testing Dashboard Integration

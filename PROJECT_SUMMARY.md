@@ -6,10 +6,10 @@ A sophisticated multi-agent system that identifies pricing inefficiencies in Pol
 
 ## What This System Does
 
-1. **Continuously monitors** active Polymarket contracts
-2. **Collects social media data** from Twitter/X and Reddit related to contracts
-3. **Analyzes sentiment** using GPT-4 to understand market psychology
-4. **Detects pricing gaps** across four categories with confidence scores
+1. **Continuously monitors** active Polymarket contracts (with automatic expired contract filtering)
+2. **Collects social media and news data** from RSS feeds (Reuters, BBC, CNN, AP, Google News), Bluesky, and optionally Twitter/X and Reddit
+3. **Analyzes sentiment** using LLM (Ollama for free, or OpenAI) with batched processing for speed
+4. **Detects pricing gaps** across four categories including cross-market arbitrage against Kalshi and Manifold Markets
 5. **Reports opportunities** in a clear, actionable console format
 
 ## Technical Architecture
@@ -21,12 +21,12 @@ A sophisticated multi-agent system that identifies pricing inefficiencies in Pol
 - Clean separation of concerns
 - Easy integration with LLM providers
 
-### LLM: OpenAI GPT-4 Turbo
-**Why GPT-4?**
-- Superior reasoning for gap detection logic
-- Excellent sentiment analysis with few-shot learning
-- Consistent structured output generation
-- Strong performance on financial/market analysis
+### LLM: Ollama (Free) or OpenAI (Paid)
+**Two options:**
+- **Ollama (Recommended)**: Free local LLMs like Qwen 2.5 7B, Llama 3.1 8B. Zero API cost, data stays local.
+- **OpenAI GPT-4**: Premium quality, slightly better reasoning (~10%), costs ~$0.10-0.30 per cycle.
+
+Switch between them by changing one line in `.env` (`LLM_PROVIDER=ollama` or `LLM_PROVIDER=openai`).
 
 ### Database: PostgreSQL
 **Why PostgreSQL?**
@@ -40,17 +40,19 @@ A sophisticated multi-agent system that identifies pricing inefficiencies in Pol
 ### 1. Data Collection Agent
 **Role:** Gather comprehensive market and social data
 **Responsibilities:**
-- Fetch active Polymarket contracts via API
-- Search Twitter/X for relevant posts
-- Collect Reddit discussions from relevant subreddits
+- Fetch active Polymarket contracts via paginated API (with overfetch strategy for diversity)
+- Collect RSS news articles from Reuters, BBC, CNN, AP, Google News
+- Search Bluesky for relevant posts via AT Protocol API
+- Optionally search Twitter/X and Reddit (when API keys configured)
+- Filter out expired contracts automatically
 - Store everything in PostgreSQL with timestamps
 - Track historical odds changes
 
 **Key Features:**
-- Rate limiting and retry logic
+- Rate limiting and retry logic for all external APIs
 - Ethical data collection (respects ToS)
-- Automatic keyword extraction from questions
-- Deduplication of social posts
+- Smart keyword extraction from contract questions (proper nouns prioritized, extensive stop word filtering)
+- Deduplication of social posts (by post_id, with per-post error handling)
 
 ### 2. Sentiment Analysis Agent
 **Role:** Analyze social media sentiment using AI
@@ -62,8 +64,11 @@ A sophisticated multi-agent system that identifies pricing inefficiencies in Pol
 - Aggregate sentiment per contract
 
 **Key Features:**
-- Batch processing for efficiency
-- JSON-structured LLM responses
+- Batched LLM analysis: sends 5 posts per LLM call (5x fewer API calls)
+- Handles both Ollama (string) and OpenAI (object) response formats
+- JSON repair for LLM output (strips markdown fences, fixes trailing commas)
+- Fallback to single-post analysis on batch parse failures
+- Skips contracts with fewer than 3 posts (MIN_POSTS_FOR_ANALYSIS)
 - Confidence scoring for each analysis
 - Historical sentiment tracking
 
@@ -73,10 +78,11 @@ A sophisticated multi-agent system that identifies pricing inefficiencies in Pol
 - Detect sentiment-probability mismatches
 - Identify information asymmetry (news not priced in)
 - Find historical pattern deviations
+- Detect cross-market arbitrage vs Kalshi and Manifold Markets
 - Calculate confidence scores (0-100)
 - Generate clear explanations with LLM
 
-**Four Gap Types:**
+**Four Gap Types (all implemented):**
 
 1. **Sentiment-Probability Mismatch**
    - Market odds don't match social sentiment
@@ -93,9 +99,11 @@ A sophisticated multi-agent system that identifies pricing inefficiencies in Pol
    - Uses statistical analysis (z-scores, standard deviation)
    - Flags unusual price movements
 
-4. **Cross-Market Arbitrage** (future enhancement)
-   - Compare same events across different platforms
-   - Identify pricing inconsistencies
+4. **Cross-Market Arbitrage**
+   - Searches Kalshi and Manifold Markets for equivalent contracts
+   - Uses LLM to confirm market matches (avoids false positives)
+   - Compares probabilities and flags discrepancies above configurable threshold (default 10%)
+   - Stores competitor platform, URL, probability, and match confidence in evidence JSONB
 
 ### 4. Reporting Agent
 **Role:** Rank and format results for presentation
@@ -118,20 +126,24 @@ A sophisticated multi-agent system that identifies pricing inefficiencies in Pol
 polymarket_agents/
 ├── src/
 │   ├── agents/                    # Four agent implementations
-│   │   ├── data_collector.py     # Agent 1: Data collection
-│   │   ├── sentiment_analyzer.py # Agent 2: Sentiment analysis
-│   │   ├── gap_detector.py       # Agent 3: Gap detection
+│   │   ├── data_collector.py     # Agent 1: Data collection (RSS, Bluesky, Twitter, Reddit)
+│   │   ├── sentiment_analyzer.py # Agent 2: Batched LLM sentiment analysis
+│   │   ├── gap_detector.py       # Agent 3: Gap detection + cross-market arbitrage
 │   │   └── reporter.py           # Agent 4: Reporting
 │   ├── database/                  # Database layer
 │   │   ├── models.py             # SQLAlchemy models
 │   │   └── connection.py         # Connection management
 │   ├── services/                  # External API integrations
-│   │   ├── polymarket_api.py     # Polymarket integration
-│   │   ├── twitter_scraper.py    # Twitter/X integration
-│   │   └── reddit_scraper.py     # Reddit integration
+│   │   ├── polymarket_api.py     # Polymarket CLOB + Gamma API (paginated)
+│   │   ├── kalshi_api.py         # Kalshi prediction market API (free, no auth)
+│   │   ├── manifold_api.py       # Manifold Markets API (free, no auth)
+│   │   ├── rss_news_scraper.py   # Free RSS feeds (Reuters, BBC, CNN, AP, Google News)
+│   │   ├── bluesky_scraper.py    # Bluesky AT Protocol API (free account)
+│   │   ├── twitter_scraper.py    # Twitter/X integration (optional, paid API)
+│   │   └── reddit_scraper.py     # Reddit integration (optional)
 │   ├── utils/                     # Utilities
 │   │   └── logger.py             # Logging setup
-│   ├── config.py                 # Configuration management
+│   ├── config.py                 # Pydantic settings management
 │   └── main.py                   # Main orchestration
 ├── migrations/
 │   └── init_db.sql               # Database schema
@@ -152,7 +164,7 @@ polymarket_agents/
 
 1. **contracts** - Polymarket contract data
 2. **historical_odds** - Odds changes over time
-3. **social_posts** - Twitter/Reddit posts
+3. **social_posts** - RSS articles, Bluesky posts, Twitter/Reddit posts
 4. **sentiment_analysis** - LLM sentiment results
 5. **detected_gaps** - Identified pricing gaps
 6. **system_logs** - Application logs
@@ -226,12 +238,22 @@ python run.py test
 All configuration via `.env` file:
 
 **Required:**
-- `OPENAI_API_KEY` - OpenAI API key for LLM
 - `DATABASE_URL` - PostgreSQL connection string
+- `LLM_PROVIDER` - `ollama` (free) or `openai` (paid)
 
-**Optional (but recommended):**
-- `TWITTER_BEARER_TOKEN` - For Twitter data
+**LLM Settings:**
+- `OLLAMA_MODEL` - Ollama model name (default: `llama3.1:8b`)
+- `OPENAI_API_KEY` - Required only if `LLM_PROVIDER=openai`
+
+**Optional data sources:**
+- `BLUESKY_HANDLE` / `BLUESKY_APP_PASSWORD` - For Bluesky posts (free account)
+- `TWITTER_BEARER_TOKEN` - For Twitter data (paid API)
 - `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` - For Reddit data
+
+**Cross-Market Arbitrage:**
+- `ENABLE_KALSHI` - Enable Kalshi comparison (default: true, free, no auth)
+- `ENABLE_MANIFOLD` - Enable Manifold comparison (default: true, free, no auth)
+- `ARBITRAGE_MIN_EDGE` - Minimum price difference to flag (default: 0.10)
 
 **System Settings:**
 - `POLLING_INTERVAL` - Seconds between cycles (default: 300)
@@ -266,9 +288,9 @@ The system is architected for easy extension. See [DEVELOPMENT.md](DEVELOPMENT.m
 
 **Resource Usage:**
 - CPU: Low (mostly I/O bound)
-- Memory: ~200-500MB
+- Memory: ~200-500MB (plus LLM memory if using Ollama)
 - Database: ~100MB per month of data
-- API Costs: ~$0.10-0.30 per cycle (OpenAI)
+- API Costs: $0.00 with Ollama, ~$0.10-0.30 per cycle with OpenAI
 
 ## Security & Privacy
 
@@ -278,11 +300,22 @@ The system is architected for easy extension. See [DEVELOPMENT.md](DEVELOPMENT.m
 - Rate limiting prevents abuse
 - Audit logging of all operations
 
+## Recent Enhancements (Completed)
+
+- Free local LLM support via Ollama (Qwen 2.5, Llama 3.1, Mistral, Phi-3)
+- RSS news feed integration (Reuters, BBC, CNN, AP, Google News)
+- Bluesky social media integration via AT Protocol API
+- Batched LLM sentiment analysis (5 posts per call, ~5x faster)
+- Cross-market arbitrage detection against Kalshi and Manifold Markets
+- Expired contract filtering across all agents
+- Paginated Polymarket API fetching with overfetch strategy
+- Smart keyword extraction with extensive stop word filtering
+- Duplicate social post handling with per-post error recovery
+
 ## Future Enhancements
 
 1. **Additional Data Sources**
    - Farcaster, Lens Protocol
-   - News APIs (Google News, NewsAPI)
    - On-chain data (transaction volumes)
 
 2. **Advanced Analytics**
@@ -359,9 +392,12 @@ MIT License - Free to use, modify, and distribute.
 
 Built with:
 - CrewAI for multi-agent orchestration
-- OpenAI GPT-4 for natural language understanding
+- Ollama / OpenAI for natural language understanding
 - PostgreSQL for robust data storage
 - Rich library for beautiful console output
+- Feedparser for RSS news collection
+- Bluesky AT Protocol for social media data
+- Kalshi and Manifold Markets APIs for cross-market arbitrage
 - PRAW for Reddit API
 - Tweepy for Twitter API
 

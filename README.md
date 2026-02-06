@@ -44,13 +44,15 @@ This system uses **CrewAI** as the agentic framework for coordinating four speci
 
 ## Features
 
-- **Real-time Monitoring**: Continuous polling of active Polymarket contracts
-- **Multi-source Sentiment**: Aggregates signals from Twitter/X and Reddit
-- **Four Gap Types**:
+- **Real-time Monitoring**: Continuous polling of active Polymarket contracts with automatic expired contract filtering
+- **Multi-source Sentiment**: Aggregates signals from RSS news feeds (Reuters, BBC, CNN, AP, Google News), Bluesky, and optionally Twitter/X and Reddit
+- **Batched LLM Analysis**: Sends multiple posts per LLM call for significantly faster sentiment processing
+- **Four Gap Types** (all implemented):
   - Sentiment-Probability Mismatches
   - Information Asymmetry Detection
-  - Cross-Market Arbitrage Opportunities
+  - Cross-Market Arbitrage (compares prices across Kalshi and Manifold Markets)
   - Historical Pattern Deviations
+- **Cross-Market Arbitrage**: Searches Kalshi and Manifold Markets for equivalent contracts, uses LLM to confirm matches, and flags pricing discrepancies exceeding a configurable threshold
 - **Confidence Scoring**: 0-100 scale for each identified gap
 - **PostgreSQL Storage**: Historical data for trend analysis
 - **Ethical Data Collection**: Respects rate limits and platform ToS
@@ -66,6 +68,7 @@ This system uses **CrewAI** as the agentic framework for coordinating four speci
 - **OpenAI API key** (PAID) - From platform.openai.com
 
 **Optional (for better data):**
+- Bluesky account (free - create at bsky.app, then generate an app password)
 - Twitter API credentials
 - Reddit API credentials
 
@@ -118,10 +121,19 @@ DATABASE_URL=postgresql://postgres:password@localhost:5432/polymarket_gaps
 LLM_PROVIDER=ollama
 OLLAMA_MODEL=llama3.1:8b
 
+# Bluesky (Free - create account at bsky.app)
+BLUESKY_HANDLE=yourhandle.bsky.social    # Optional
+BLUESKY_APP_PASSWORD=your-app-password   # Optional
+
 # Social Media (Optional)
 TWITTER_BEARER_TOKEN=your_twitter_token  # Optional
-REDDIT_CLIENT_ID=your_reddit_client_id    # Optional
-REDDIT_CLIENT_SECRET=your_reddit_secret   # Optional
+REDDIT_CLIENT_ID=your_reddit_client_id   # Optional
+REDDIT_CLIENT_SECRET=your_reddit_secret  # Optional
+
+# Cross-Market Arbitrage (enabled by default, no keys needed)
+ENABLE_KALSHI=true
+ENABLE_MANIFOLD=true
+ARBITRAGE_MIN_EDGE=0.10  # 10% minimum price difference to flag
 ```
 
 See [OLLAMA_SETUP.md](OLLAMA_SETUP.md) for Ollama installation.
@@ -135,12 +147,6 @@ DATABASE_URL=postgresql://postgres:password@localhost:5432/polymarket_gaps
 # LLM - Use OpenAI API
 LLM_PROVIDER=openai
 OPENAI_API_KEY=your_openai_api_key_here
-
-# Social Media (Optional)
-TWITTER_BEARER_TOKEN=your_twitter_token
-REDDIT_CLIENT_ID=your_reddit_client_id
-REDDIT_CLIENT_SECRET=your_reddit_secret
-POLYMARKET_GAMMA_API_URL=https://gamma-api.polymarket.com/
 
 # System Settings
 POLLING_INTERVAL=300  # seconds
@@ -181,20 +187,25 @@ RANK #2 - Confidence: 73/100
 polymarket_agents/
 ├── src/
 │   ├── agents/              # Agent implementations
-│   │   ├── data_collector.py
-│   │   ├── sentiment_analyzer.py
-│   │   ├── gap_detector.py
-│   │   └── reporter.py
+│   │   ├── data_collector.py       # Fetches contracts + social media data
+│   │   ├── sentiment_analyzer.py   # Batched LLM sentiment analysis
+│   │   ├── gap_detector.py         # Gap detection + cross-market arbitrage
+│   │   └── reporter.py             # Ranking and formatted output
 │   ├── database/            # Database models and connection
 │   │   ├── models.py
 │   │   └── connection.py
 │   ├── services/            # External API integrations
-│   │   ├── polymarket_api.py
-│   │   ├── twitter_scraper.py
-│   │   └── reddit_scraper.py
+│   │   ├── polymarket_api.py       # Polymarket CLOB + Gamma API
+│   │   ├── kalshi_api.py           # Kalshi prediction market API
+│   │   ├── manifold_api.py         # Manifold Markets API
+│   │   ├── rss_news_scraper.py     # Free RSS news feeds
+│   │   ├── bluesky_scraper.py      # Bluesky AT Protocol API
+│   │   ├── twitter_scraper.py      # Twitter/X API (optional)
+│   │   └── reddit_scraper.py       # Reddit API (optional)
 │   ├── utils/               # Utility functions
 │   │   └── logger.py
-│   └── main.py             # Main orchestration
+│   ├── config.py            # Pydantic settings management
+│   └── main.py              # Main orchestration
 ├── config/
 │   └── .env.example
 ├── migrations/
@@ -274,6 +285,13 @@ psql postgresql://user:password@localhost:5432/polymarket_gaps
 
 ## Development Roadmap
 
+- [x] Free local LLM support via Ollama
+- [x] RSS news feed integration (Reuters, BBC, CNN, AP, Google News)
+- [x] Bluesky social media integration
+- [x] Batched LLM sentiment analysis (5x faster)
+- [x] Cross-market arbitrage detection (Kalshi + Manifold Markets)
+- [x] Expired contract filtering
+- [x] Paginated contract fetching with overfetch strategy
 - [ ] Add more social media sources (Farcaster, Lens)
 - [ ] Implement ML model for sentiment (reduce LLM costs)
 - [ ] Add backtesting framework

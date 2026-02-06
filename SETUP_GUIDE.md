@@ -10,32 +10,40 @@ Complete step-by-step guide to get the system running.
 - 8GB RAM minimum (16GB recommended)
 - Stable internet connection
 
-### 2. API Keys Required
+### 2. API Keys / Accounts
 
-#### OpenAI API Key (REQUIRED)
+#### LLM Provider (choose one)
+
+**Option A: Ollama (FREE - Recommended)**
+1. Install Ollama (see [OLLAMA_SETUP.md](OLLAMA_SETUP.md))
+2. Pull a model: `ollama pull llama3.1:8b`
+3. No API key needed
+
+**Option B: OpenAI (PAID)**
 1. Go to [OpenAI Platform](https://platform.openai.com/)
 2. Sign up or log in
 3. Navigate to API Keys section
-4. Create a new API key
-5. Copy the key (starts with `sk-`)
+4. Create a new API key (starts with `sk-`)
 
-#### Twitter API (Optional but Recommended)
+#### Bluesky Account (Optional, Free)
+1. Create a free account at [bsky.app](https://bsky.app)
+2. Go to Settings > App Passwords
+3. Generate an app password
+4. Note down your handle (e.g., `yourname.bsky.social`) and app password
+
+#### Cross-Market APIs (No Setup Needed)
+Kalshi and Manifold Markets APIs are free and require no authentication. They are enabled by default.
+
+#### Twitter API (Optional, Paid)
 1. Apply for Twitter Developer Account: [Twitter Developer Portal](https://developer.twitter.com/)
 2. Create a new App
-3. Generate API keys and tokens:
-   - API Key
-   - API Secret
-   - Bearer Token
-   - Access Token
-   - Access Token Secret
+3. Generate a Bearer Token
 
-#### Reddit API (Optional but Recommended)
+#### Reddit API (Optional)
 1. Go to [Reddit Apps](https://www.reddit.com/prefs/apps)
 2. Click "Create App" or "Create Another App"
 3. Select "script"
-4. Note down:
-   - Client ID (under app name)
-   - Client Secret
+4. Note down Client ID and Client Secret
 
 ## Installation Steps
 
@@ -125,15 +133,26 @@ cp config/.env.example .env
 # Database (update with your PostgreSQL credentials)
 DATABASE_URL=postgresql://postgres:your_password@localhost:5432/polymarket_gaps
 
-# OpenAI (REQUIRED)
-OPENAI_API_KEY=sk-your-actual-openai-key-here
+# LLM Provider: "ollama" (free) or "openai" (paid)
+LLM_PROVIDER=ollama
+OLLAMA_MODEL=llama3.1:8b
+# OPENAI_API_KEY=sk-your-key  # Only needed if LLM_PROVIDER=openai
 
-# Twitter (Optional - system works without it)
-TWITTER_BEARER_TOKEN=your-twitter-bearer-token-here
+# Bluesky (Optional, free - create account at bsky.app)
+# BLUESKY_HANDLE=yourname.bsky.social
+# BLUESKY_APP_PASSWORD=your-app-password
 
-# Reddit (Optional - system works without it)
-REDDIT_CLIENT_ID=your-reddit-client-id
-REDDIT_CLIENT_SECRET=your-reddit-client-secret
+# Twitter (Optional, paid API)
+# TWITTER_BEARER_TOKEN=your-twitter-bearer-token-here
+
+# Reddit (Optional)
+# REDDIT_CLIENT_ID=your-reddit-client-id
+# REDDIT_CLIENT_SECRET=your-reddit-client-secret
+
+# Cross-Market Arbitrage (enabled by default, no API keys needed)
+ENABLE_KALSHI=true
+ENABLE_MANIFOLD=true
+ARBITRAGE_MIN_EDGE=0.10
 
 # System Settings (defaults are fine)
 POLLING_INTERVAL=300
@@ -221,22 +240,16 @@ psql -U postgres -d polymarket_gaps
 ```
 
 ### Issue: "OpenAI API key is required"
-**Solution**: Ensure OPENAI_API_KEY is set in `.env` file
-```bash
-# Verify .env file exists
-cat .env | grep OPENAI_API_KEY
-
-# Make sure key starts with sk-
-```
+**Solution**: Either set `LLM_PROVIDER=ollama` for free local LLM, or set `OPENAI_API_KEY` in `.env`
 
 ### Issue: "No pricing gaps detected"
 **Possible causes**:
-1. Not enough social media data (Twitter/Reddit credentials not configured)
+1. Not enough social media data yet (RSS feeds work out of the box, but Bluesky/Twitter/Reddit are optional)
 2. MIN_CONFIDENCE_SCORE set too high
 3. Not enough historical data yet
 
 **Solutions**:
-- Add Twitter/Reddit API credentials to `.env`
+- Configure Bluesky credentials for more social data (free)
 - Lower MIN_CONFIDENCE_SCORE in `.env` temporarily
 - Run multiple cycles to build historical data
 
@@ -295,10 +308,10 @@ MAX_CONTRACTS_PER_CYCLE=5  # Analyze fewer contracts
 SENTIMENT_BATCH_SIZE=25     # Smaller batches
 ```
 
-### For Lower OpenAI Costs
+### For Zero LLM Costs
 ```env
-OPENAI_MODEL=gpt-3.5-turbo  # Cheaper model
-OPENAI_TEMPERATURE=0.1       # More deterministic = fewer tokens
+LLM_PROVIDER=ollama          # Use free local model
+OLLAMA_MODEL=llama3.1:8b     # Or qwen2.5:7b, mistral, phi3
 ```
 
 ## Next Steps

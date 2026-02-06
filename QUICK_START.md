@@ -191,9 +191,16 @@ OLLAMA_MODEL=llama3.1:8b
 DATABASE_URL=postgresql://postgres:password@localhost:5432/polymarket_gaps
 LLM_PROVIDER=ollama
 OLLAMA_MODEL=llama3.1:8b
-TWITTER_BEARER_TOKEN=your-token  # Optional
-REDDIT_CLIENT_ID=your-id          # Optional
-REDDIT_CLIENT_SECRET=your-secret  # Optional
+
+# Bluesky (free - create account at bsky.app)
+BLUESKY_HANDLE=yourname.bsky.social
+BLUESKY_APP_PASSWORD=your-app-password
+
+# Cross-market arbitrage (enabled by default, free, no auth needed)
+ENABLE_KALSHI=true
+ENABLE_MANIFOLD=true
+ARBITRAGE_MIN_EDGE=0.10
+
 POLLING_INTERVAL=300
 MIN_CONFIDENCE_SCORE=60
 ```
