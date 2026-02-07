@@ -203,4 +203,7 @@ def init_database(database_url: Optional[str] = None) -> DatabaseManager:
     if not _db_manager.test_connection():
         raise ConnectionError("Failed to connect to database")
 
+    # Create tables if they don't exist
+    _db_manager.create_tables()
+
     return _db_manager

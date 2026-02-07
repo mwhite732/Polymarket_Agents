@@ -34,25 +34,28 @@ class PolymarketAPI:
         self.gamma_url = self.settings.polymarket_gamma_api_url
         self.strapi_url = self.settings.polymarket_strapi_url
 
-        # Configure session with retry logic
+        # Configure session with retry logic (do NOT retry 429 here; we handle it in _make_request)
         self.session = self._create_session()
 
         # Rate limiting configuration (10 requests per minute by default)
         self.rate_limit_calls = self.settings.polymarket_rate_limit
         self.rate_limit_period = 60  # seconds
+        # Max 429 retries with backoff to avoid infinite recursion / stack overflow
+        self._max_429_retries = 5
+        self._429_backoff_base_seconds = 60
 
         logger.info("Polymarket API client initialized")
 
     def _create_session(self) -> requests.Session:
-        """Create requests session with retry logic."""
+        """Create requests session with retry logic. 429 excluded so we handle it in _make_request."""
         session = requests.Session()
 
-        # Retry strategy
+        # Retry only for server errors (5xx), NOT 429 - we handle 429 in a loop with backoff
         retry_strategy = Retry(
             total=3,
-            status_forcelist=[429, 500, 502, 503, 504],
+            status_forcelist=[500, 502, 503, 504],
             allowed_methods=["HEAD", "GET", "OPTIONS"],
-            backoff_factor=1  # 1, 2, 4 seconds
+            backoff_factor=1
         )
 
         adapter = HTTPAdapter(max_retries=retry_strategy)
@@ -71,7 +74,7 @@ class PolymarketAPI:
     @limits(calls=10, period=60)  # Rate limit: 10 calls per minute
     def _make_request(self, url: str, params: Optional[Dict] = None) -> Dict:
         """
-        Make rate-limited API request.
+        Make rate-limited API request. On 429, backs off in a loop (no recursion).
 
         Args:
             url: API endpoint URL
@@ -81,22 +84,36 @@ class PolymarketAPI:
             JSON response as dictionary
 
         Raises:
-            requests.RequestException: If request fails
+            requests.RequestException: If request fails after retries
         """
-        try:
-            response = self.session.get(url, params=params, timeout=30)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 429:
-                logger.warning("Rate limit hit, backing off...")
-                time.sleep(60)
-                return self._make_request(url, params)
-            logger.error(f"HTTP error: {e}")
-            raise
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Request error: {e}")
-            raise
+        last_error = None
+        for attempt in range(self._max_429_retries + 1):
+            try:
+                response = self.session.get(url, params=params, timeout=30)
+                if response.status_code == 429:
+                    if attempt < self._max_429_retries:
+                        backoff = self._429_backoff_base_seconds * (2 ** attempt)
+                        logger.warning("Rate limit (429), backing off %ds (attempt %d/%d)", backoff, attempt + 1, self._max_429_retries)
+                        time.sleep(backoff)
+                        continue
+                    response.raise_for_status()
+                response.raise_for_status()
+                return response.json()
+            except requests.exceptions.HTTPError as e:
+                last_error = e
+                if e.response is not None and e.response.status_code == 429:
+                    if attempt >= self._max_429_retries:
+                        logger.error("Rate limit (429) persisted after %d retries", self._max_429_retries)
+                    raise
+                logger.error(f"HTTP error: {e}")
+                raise
+            except requests.exceptions.RequestException as e:
+                last_error = e
+                logger.error(f"Request error: {e}")
+                raise
+        if last_error:
+            raise last_error
+        raise requests.exceptions.RequestException("Request failed after retries")
 
     def get_active_markets(self, limit: int = 100) -> List[Dict]:
         """

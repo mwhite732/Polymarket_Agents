@@ -10,6 +10,9 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from sqlalchemy import func
+from sqlalchemy.orm import joinedload
+
 from ..config import get_settings
 from ..database import get_db_manager
 from ..database.models import Contract, DetectedGap
@@ -68,23 +71,41 @@ class ReportingAgent:
 
         try:
             with self.db_manager.get_session() as session:
-                # Get recent unresolved gaps
-                gaps = session.query(DetectedGap).join(
-                    Contract, DetectedGap.contract_id == Contract.id
-                ).filter(
-                    DetectedGap.resolved == False,
-                    DetectedGap.confidence_score >= self.settings.min_confidence_score
-                ).order_by(
-                    DetectedGap.confidence_score.desc(),
-                    DetectedGap.detected_at.desc()
-                ).limit(limit).all()
+                # Get recent unresolved gaps. One row per (contract_id, gap_type) - latest only.
+                subq = (
+                    session.query(
+                        DetectedGap.id,
+                        func.row_number().over(
+                            partition_by=[DetectedGap.contract_id, DetectedGap.gap_type],
+                            order_by=DetectedGap.detected_at.desc()
+                        ).label('rn')
+                    ).filter(
+                        DetectedGap.resolved == False,
+                        DetectedGap.confidence_score >= self.settings.min_confidence_score
+                    )
+                ).subquery()
+
+                gap_ids = [
+                    r[0] for r in
+                    session.query(subq.c.id).filter(subq.c.rn == 1).limit(limit * 2).all()
+                ]
+
+                if not gap_ids:
+                    return []
+
+                gaps = (
+                    session.query(DetectedGap)
+                    .options(joinedload(DetectedGap.contract))
+                    .filter(DetectedGap.id.in_(gap_ids))
+                    .order_by(DetectedGap.confidence_score.desc(), DetectedGap.detected_at.desc())
+                    .limit(limit)
+                    .all()
+                )
 
                 # Format gaps with contract information
                 result = []
                 for gap in gaps:
-                    contract = session.query(Contract).filter(
-                        Contract.id == gap.contract_id
-                    ).first()
+                    contract = gap.contract
 
                     if contract:
                         result.append({

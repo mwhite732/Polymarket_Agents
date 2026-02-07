@@ -2,6 +2,8 @@
 
 An intelligent multi-agent system that identifies pricing inefficiencies in Polymarket prediction markets by analyzing contract data and social media sentiment in real-time.
 
+**Recent changes:** See [CHANGELOG.md](CHANGELOG.md) for bug fixes and improvements (429 handling, data loss fix, RSS dedup, gap deduplication, configurable social coverage, etc.).
+
 ## 🆓 Run Completely FREE with Ollama!
 
 **NEW**: You can now run this system with **zero API costs** using Ollama (local LLMs).

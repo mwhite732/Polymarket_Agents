@@ -99,6 +99,25 @@ class SentimentAnalysisAgent:
         # Fix trailing commas before ] or }
         text = re.sub(r',\s*([}\]])', r'\1', text)
 
+        # Fix missing commas between } and { (e.g. "}{" or "}\n{")
+        text = re.sub(r'\}\s*\{', '},{', text)
+
+        # Fix missing commas between } and " (e.g. } "key":)
+        text = re.sub(r'\}\s*"', '}, "', text)
+
+        # Fix missing commas between a value and the next key (e.g. "value" "key":)
+        text = re.sub(r'"\s*\n\s*"', '", "', text)
+
+        # Fix single quotes used instead of double quotes
+        # Only do this if there are no double quotes (avoid breaking strings)
+        if '"' not in text:
+            text = text.replace("'", '"')
+
+        # Remove any control characters that can break JSON
+        text = re.sub(r'[\x00-\x1f\x7f]', ' ', text)
+        # But restore newlines and tabs inside the structure (harmless in JSON)
+        text = text.replace('\\n', ' ').replace('\\t', ' ')
+
         return text
 
     def _analyze_batch(self, contents: List[str]) -> List[Optional[Dict]]:
@@ -157,6 +176,30 @@ Example: [{{"sentiment_score": 0.5, "sentiment_label": "positive", "confidence":
             return results
 
         except json.JSONDecodeError as e:
+            # Last resort: try to extract individual JSON objects manually
+            try:
+                import re
+                objects = re.findall(r'\{[^{}]+\}', result_text)
+                if len(objects) >= len(contents):
+                    parsed = [json.loads(obj) for obj in objects[:len(contents)]]
+                    results = []
+                    for item in parsed:
+                        try:
+                            results.append({
+                                'score': Decimal(str(max(-1.0, min(1.0, float(item['sentiment_score']))))),
+                                'label': item['sentiment_label'].lower(),
+                                'confidence': Decimal(str(max(0.0, min(1.0, float(item['confidence']))))),
+                                'topics': item.get('topics', [])[:5]
+                            })
+                        except (KeyError, ValueError, TypeError):
+                            results.append(None)
+                    while len(results) < len(contents):
+                        results.append(None)
+                    logger.debug(f"Batch JSON repaired by extracting individual objects")
+                    return results
+            except Exception:
+                pass
+
             logger.warning(f"Batch JSON parse failed ({e}), falling back to single-post analysis")
             return [self._analyze_single_post(c) for c in contents]
         except Exception as e:
@@ -342,7 +385,12 @@ Respond with ONLY valid JSON, no additional text.
 
         try:
             with self.db_manager.get_session() as session:
-                # Get active contracts that haven't expired yet
+                # Only analyze contracts that have at least one social post (otherwise no sentiment to analyze)
+                from sqlalchemy import any_, exists
+                from ..database.models import SocialPost
+                has_post = exists().where(
+                    Contract.id == any_(SocialPost.related_contracts)
+                )
                 now = datetime.now(timezone.utc)
                 contracts = session.query(Contract).filter(
                     Contract.active == True,
