@@ -1,5 +1,6 @@
 """Data Collection Agent - Fetches market and social media data."""
 
+import hashlib
 from datetime import datetime, timezone
 from typing import Dict, List
 from uuid import UUID
@@ -177,8 +178,11 @@ class DataCollectionAgent:
 
         results = {}
         hours_back = self.settings.data_collection_lookback_hours
+        max_contracts = getattr(
+            self.settings, 'max_contracts_for_social', self.settings.max_contracts_per_cycle
+        )
 
-        for contract in contracts[:10]:  # Limit to avoid rate limits
+        for contract in contracts[:max_contracts]:
             contract_id = contract['id']
             question = contract['question']
 
@@ -243,10 +247,12 @@ class DataCollectionAgent:
                         hours_back=hours_back
                     )
 
-                    # Convert news articles to social post format
+                    # Convert news articles to social post format.
+                    # Use stable hash (SHA-256 of URL) so same article is deduplicated across runs.
                     for article in news_articles[:20]:  # Limit to 20 articles
+                        url_hash = hashlib.sha256(article['url'].encode('utf-8')).hexdigest()[:16]
                         posts.append({
-                            'post_id': f"rss_{hash(article['url'])}",  # Generate unique ID
+                            'post_id': f"rss_{url_hash}",
                             'platform': 'news_rss',
                             'author': article['author'],
                             'content': f"{article['title']}: {article['content']}",
@@ -274,8 +280,8 @@ class DataCollectionAgent:
         """
         Store social media posts in database.
 
-        Deduplicates posts by post_id before inserting and handles
-        conflicts gracefully so one bad post doesn't fail the batch.
+        Deduplicates posts by post_id before inserting. Commits after each
+        successful post so one failing post does not roll back the whole batch.
 
         Args:
             posts: List of post dictionaries
@@ -310,6 +316,7 @@ class DataCollectionAgent:
                                 contracts_list = list(existing.related_contracts or [])
                                 contracts_list.append(UUID(contract_id))
                                 existing.related_contracts = contracts_list
+                            session.commit()
                             continue
 
                         # Create new post
@@ -324,14 +331,12 @@ class DataCollectionAgent:
                             related_contracts=[UUID(contract_id)]
                         )
                         session.add(post)
-                        session.flush()  # Flush each post so duplicates don't poison the batch
+                        session.commit()
                         stored_posts.append(post_data)
 
                     except Exception as e:
                         session.rollback()
                         logger.debug(f"Skipped post {post_data.get('post_id', '?')}: {e}")
-
-                session.commit()
 
         except Exception as e:
             logger.error(f"Error storing social posts: {e}")

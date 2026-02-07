@@ -123,7 +123,7 @@ class GapDetectionAgent:
                     SentimentAnalysis.contract_id == UUID(contract_id)
                 ).all()
 
-                if not sentiment_analyses or len(sentiment_analyses) < 5:
+                if not sentiment_analyses or len(sentiment_analyses) < 3:
                     # Need sufficient data
                     return None
 
@@ -132,15 +132,17 @@ class GapDetectionAgent:
                 positive_count = sum(1 for s in sentiment_analyses if s.sentiment_label == 'positive')
                 positive_ratio = positive_count / len(sentiment_analyses)
 
-                # Convert sentiment to implied probability
-                # Sentiment of +1 (very bullish) → ~90% probability
-                # Sentiment of 0 (neutral) → ~50% probability
-                # Sentiment of -1 (very bearish) → ~10% probability
-                implied_prob = 0.5 + (avg_sentiment * 0.4)  # Maps -1..1 to 0.1..0.9
-                implied_odds = Decimal(str(round(implied_prob, 4)))
-
                 # Current market odds
                 market_odds = float(contract.current_yes_odds)
+
+                # Use sentiment as a RELATIVE adjustment to market price.
+                # Positive sentiment suggests the market should be higher;
+                # negative sentiment suggests the market should be lower.
+                scale = getattr(self.settings, 'gap_sentiment_prob_scale', 0.4)
+                sentiment_adjustment = avg_sentiment * scale
+                implied_prob = market_odds + sentiment_adjustment
+                implied_prob = max(0.05, min(0.95, implied_prob))  # Clamp to valid range
+                implied_odds = Decimal(str(round(implied_prob, 4)))
 
                 # Calculate gap
                 gap_size = abs(implied_prob - market_odds)
@@ -159,11 +161,12 @@ class GapDetectionAgent:
 
                 # Calculate confidence score (0-100)
                 # Factors: gap size, data volume, sentiment consistency
-                gap_factor = min(gap_size / 0.3, 1.0) * 40  # Max 40 points
-                volume_factor = min(len(sentiment_analyses) / 50, 1.0) * 30  # Max 30 points
+                # Tuned for realistic data volumes (Bluesky + RSS ≈ 10-80 posts per contract)
+                gap_factor = min(gap_size / 0.15, 1.0) * 40  # Max 40 points (15% gap = full score)
+                volume_factor = min(len(sentiment_analyses) / 15, 1.0) * 30  # Max 30 points (15 posts = full score)
                 consistency_factor = abs(positive_ratio - 0.5) * 2 * 30  # Max 30 points
 
-                confidence = int(gap_factor + volume_factor + consistency_factor)
+                confidence = min(max(int(gap_factor + volume_factor + consistency_factor), 0), 100)
 
                 # Generate explanation using LLM
                 explanation = self._generate_gap_explanation(
@@ -242,7 +245,7 @@ class GapDetectionAgent:
                     SentimentAnalysis.analyzed_at < recent_cutoff
                 ).all()
 
-                if len(recent_sentiment) < 5 or len(older_sentiment) < 5:
+                if len(recent_sentiment) < 3 or len(older_sentiment) < 3:
                     return None
 
                 # Calculate sentiment shifts
@@ -252,7 +255,7 @@ class GapDetectionAgent:
                 sentiment_shift = recent_avg - older_avg
 
                 # Check if there's a significant shift
-                if abs(sentiment_shift) < 0.3:  # Threshold for significant shift
+                if abs(sentiment_shift) < 0.2:  # Threshold for significant shift
                     return None
 
                 # Check if odds have moved accordingly
@@ -707,33 +710,55 @@ Respond with ONLY the JSON array, no extra text.
 
         try:
             with self.db_manager.get_session() as session:
-                # Get active contracts that haven't expired yet
+                # Only analyze contracts that have sentiment data (from social posts)
+                from sqlalchemy import exists
                 now = datetime.now(timezone.utc)
+                has_sentiment = exists().where(
+                    SentimentAnalysis.contract_id == Contract.id
+                )
                 contracts = session.query(Contract).filter(
                     Contract.active == True,
-                    (Contract.end_date > now) | (Contract.end_date == None)
+                    (Contract.end_date > now) | (Contract.end_date == None),
+                    has_sentiment
                 ).all()
+
+                dedupe_hours = getattr(self.settings, 'gap_dedupe_hours', 24)
+                dedupe_since = now - timedelta(hours=dedupe_hours)
 
                 for contract in contracts:
                     logger.info(f"Analyzing gaps for: {contract.question[:50]}...")
 
                     gaps = self.detect_all_gaps(str(contract.id))
 
-                    # Store gaps in database
+                    # Store gaps in database (skip if same contract+type already detected recently)
                     for gap in gaps:
-                        if gap['confidence_score'] >= self.settings.min_confidence_score:
-                            detected_gap = DetectedGap(
-                                contract_id=UUID(gap['contract_id']),
-                                gap_type=gap['gap_type'],
-                                confidence_score=gap['confidence_score'],
-                                explanation=gap['explanation'],
-                                evidence=gap['evidence'],
-                                market_odds=gap['market_odds'],
-                                implied_odds=gap.get('implied_odds'),
-                                edge_percentage=gap['edge_percentage']
+                        if gap['confidence_score'] < self.settings.min_confidence_score:
+                            continue
+                        # Avoid duplicate rows: skip if we already have this gap type for this contract recently
+                        existing = session.query(DetectedGap).filter(
+                            DetectedGap.contract_id == UUID(gap['contract_id']),
+                            DetectedGap.gap_type == gap['gap_type'],
+                            DetectedGap.detected_at >= dedupe_since,
+                        ).first()
+                        if existing:
+                            logger.debug(
+                                "Skipping duplicate gap: contract=%s type=%s (already detected at %s)",
+                                gap['contract_id'], gap['gap_type'], existing.detected_at
                             )
-                            session.add(detected_gap)
-                            all_gaps.append(gap)
+                            continue
+
+                        detected_gap = DetectedGap(
+                            contract_id=UUID(gap['contract_id']),
+                            gap_type=gap['gap_type'],
+                            confidence_score=gap['confidence_score'],
+                            explanation=gap['explanation'],
+                            evidence=gap['evidence'],
+                            market_odds=gap['market_odds'],
+                            implied_odds=gap.get('implied_odds'),
+                            edge_percentage=gap['edge_percentage']
+                        )
+                        session.add(detected_gap)
+                        all_gaps.append(gap)
 
                 session.commit()
 

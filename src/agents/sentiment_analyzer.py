@@ -385,11 +385,17 @@ Respond with ONLY valid JSON, no additional text.
 
         try:
             with self.db_manager.get_session() as session:
-                # Get active contracts that haven't expired yet
+                # Only analyze contracts that have at least one social post (otherwise no sentiment to analyze)
+                from sqlalchemy import any_, exists
+                from ..database.models import SocialPost
+                has_post = exists().where(
+                    Contract.id == any_(SocialPost.related_contracts)
+                )
                 now = datetime.now(timezone.utc)
                 contracts = session.query(Contract).filter(
                     Contract.active == True,
-                    (Contract.end_date > now) | (Contract.end_date == None)
+                    (Contract.end_date > now) | (Contract.end_date == None),
+                    has_post
                 ).limit(self.settings.max_contracts_per_cycle).all()
 
                 for contract in contracts:

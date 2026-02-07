@@ -100,8 +100,13 @@ class Settings(BaseSettings):
         ge=1,
         description='Max contracts to analyze per cycle'
     )
+    max_contracts_for_social: int = Field(
+        default=50,
+        ge=1,
+        description='Max contracts to fetch social/news data for (more = more coverage, more API usage)'
+    )
     min_confidence_score: int = Field(
-        default=60,
+        default=45,
         ge=0,
         le=100,
         description='Minimum confidence to report a gap'
@@ -149,10 +154,22 @@ class Settings(BaseSettings):
         description='Posts per sentiment analysis batch'
     )
     gap_detection_threshold: float = Field(
-        default=0.15,
+        default=0.08,
         ge=0.0,
         le=1.0,
         description='Minimum odds difference to flag'
+    )
+    gap_dedupe_hours: int = Field(
+        default=24,
+        ge=0,
+        description='Skip storing a gap if same contract+type was already detected within this many hours'
+    )
+    # Sentiment score (-1..1) is mapped to implied probability: 0.5 + (sentiment * scale). Default 0.4 → 0.1..0.9
+    gap_sentiment_prob_scale: float = Field(
+        default=0.4,
+        ge=0.0,
+        le=0.5,
+        description='Scale from sentiment to implied probability (0.5 + sentiment * scale)'
     )
     arbitrage_min_edge: float = Field(
         default=0.10,
