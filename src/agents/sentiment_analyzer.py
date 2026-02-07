@@ -347,6 +347,8 @@ Respond with ONLY valid JSON, no additional text.
                 contracts = session.query(Contract).filter(
                     Contract.active == True,
                     (Contract.end_date > now) | (Contract.end_date == None)
+                ).order_by(
+                    Contract.end_date.asc().nulls_last()
                 ).limit(self.settings.max_contracts_per_cycle).all()
 
                 for contract in contracts:

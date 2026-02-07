@@ -712,6 +712,8 @@ Respond with ONLY the JSON array, no extra text.
                 contracts = session.query(Contract).filter(
                     Contract.active == True,
                     (Contract.end_date > now) | (Contract.end_date == None)
+                ).order_by(
+                    Contract.end_date.asc().nulls_last()
                 ).all()
 
                 for contract in contracts:
