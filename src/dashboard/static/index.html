@@ -1,0 +1,1116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Polymarket Agents Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --border: #2a2d3a;
+      --text: #e1e4eb;
+      --text-dim: #8b8fa3;
+      --accent: #6366f1;
+      --green: #22c55e;
+      --red: #ef4444;
+      --yellow: #eab308;
+      --orange: #f97316;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 16px 0;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 24px;
+    }
+    header h1 { font-size: 1.4rem; font-weight: 600; }
+    .stats-bar {
+      display: flex;
+      gap: 24px;
+      font-size: 0.85rem;
+      color: var(--text-dim);
+    }
+    .stats-bar span strong { color: var(--text); }
+    .filters {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    select, input[type="text"], input[type="number"] {
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+    }
+    select:focus, input:focus { outline: none; border-color: var(--accent); }
+    button {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      font-weight: 500;
+    }
+    button:hover { opacity: 0.9; }
+    button.secondary {
+      background: var(--surface);
+      border: 1px solid var(--border);
+    }
+    .tabs {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    .tab {
+      padding: 10px 20px;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      color: var(--text-dim);
+      font-size: 0.9rem;
+      background: none;
+      border-radius: 0;
+    }
+    .tab:hover { color: var(--text); }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .gap-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 12px;
+      transition: border-color 0.15s;
+    }
+    .gap-card:hover { border-color: var(--accent); }
+    .gap-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 8px;
+    }
+    .gap-title { font-weight: 600; font-size: 0.95rem; flex: 1; }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      margin-left: 8px;
+      white-space: nowrap;
+    }
+    .badge-high { background: rgba(239,68,68,0.15); color: var(--red); }
+    .badge-med { background: rgba(234,179,8,0.15); color: var(--yellow); }
+    .badge-low { background: rgba(34,197,94,0.15); color: var(--green); }
+    .badge-type { background: rgba(99,102,241,0.15); color: var(--accent); }
+    .gap-meta {
+      display: flex;
+      gap: 16px;
+      font-size: 0.8rem;
+      color: var(--text-dim);
+      margin-top: 6px;
+    }
+    .gap-meta span strong { color: var(--text); }
+    .gap-explanation {
+      font-size: 0.85rem;
+      color: var(--text-dim);
+      margin-top: 8px;
+      line-height: 1.4;
+    }
+    .chart-container {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .chart-title { font-weight: 600; margin-bottom: 12px; }
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: var(--text-dim);
+    }
+    .loading { text-align: center; padding: 40px; color: var(--text-dim); }
+    .backtest-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+    .metric-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      text-align: center;
+    }
+    .metric-value { font-size: 1.8rem; font-weight: 700; }
+    .metric-label { font-size: 0.8rem; color: var(--text-dim); margin-top: 4px; }
+    .sentiment-controls {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+    .sentiment-controls select { flex: 1; }
+    #sentiment-chart-wrap { position: relative; height: 350px; }
+    .refresh-btn {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      padding: 6px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.8rem;
+    }
+    .refresh-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* Progress Panel */
+    .progress-panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 20px;
+      margin-bottom: 24px;
+    }
+    .progress-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+    .progress-header h2 { font-size: 1rem; font-weight: 600; }
+    .pipeline-stage {
+      font-size: 0.8rem;
+      padding: 4px 12px;
+      border-radius: 12px;
+      font-weight: 600;
+    }
+    .stage-idle { background: rgba(139,143,163,0.15); color: var(--text-dim); }
+    .stage-sentiment { background: rgba(99,102,241,0.15); color: var(--accent); }
+    .stage-gap_detection { background: rgba(234,179,8,0.15); color: var(--yellow); }
+    .stage-complete { background: rgba(34,197,94,0.15); color: var(--green); }
+
+    .progress-bar-wrap {
+      background: #252836;
+      border-radius: 8px;
+      height: 28px;
+      overflow: hidden;
+      margin-bottom: 16px;
+      position: relative;
+    }
+    .progress-bar-fill {
+      height: 100%;
+      border-radius: 8px;
+      background: linear-gradient(90deg, var(--accent), #818cf8);
+      transition: width 0.6s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: #fff;
+      min-width: 40px;
+    }
+    .progress-bar-label {
+      position: absolute;
+      right: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 0.7rem;
+      color: var(--text-dim);
+    }
+
+    .progress-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+    }
+    .progress-card {
+      background: var(--bg);
+      border-radius: 8px;
+      padding: 12px;
+    }
+    .progress-card-label { font-size: 0.7rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+    .progress-card-value { font-size: 1.3rem; font-weight: 700; }
+    .progress-card-sub { font-size: 0.7rem; color: var(--text-dim); margin-top: 2px; }
+    .platform-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+    .platform-tag {
+      font-size: 0.65rem;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: rgba(99,102,241,0.1);
+      color: var(--accent);
+    }
+    .sentiment-breakdown { display: flex; gap: 8px; margin-top: 6px; }
+    .sent-chip {
+      font-size: 0.65rem;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+    .sent-positive { background: rgba(34,197,94,0.15); color: var(--green); }
+    .sent-negative { background: rgba(239,68,68,0.15); color: var(--red); }
+    .sent-neutral { background: rgba(139,143,163,0.15); color: var(--text-dim); }
+    .pulse { animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+    .backtest-type-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.9rem;
+    }
+    .backtest-type-row .type-name { color: var(--accent); }
+
+    /* Data Sources Panel */
+    .sources-panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px 20px;
+      margin-bottom: 24px;
+    }
+    .sources-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    .sources-header h2 { font-size: 1rem; font-weight: 600; }
+    .llm-badge {
+      font-size: 0.75rem;
+      padding: 3px 10px;
+      border-radius: 12px;
+      background: rgba(99,102,241,0.15);
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .sources-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .source-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 14px;
+      border-radius: 8px;
+      font-size: 0.8rem;
+      font-weight: 500;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      position: relative;
+      cursor: default;
+      transition: border-color 0.2s;
+    }
+    .source-chip:hover { border-color: var(--accent); }
+    .source-chip .source-name { font-weight: 600; }
+    .source-chip .source-type {
+      font-size: 0.65rem;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .source-chip .source-stats {
+      display: flex;
+      gap: 8px;
+      font-size: 0.7rem;
+      color: var(--text-dim);
+    }
+    .source-chip .source-stats .stat-recent {
+      color: var(--green);
+      font-weight: 600;
+    }
+    .source-chip .source-stats .stat-zero {
+      color: #555;
+    }
+    .source-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+      flex-shrink: 0;
+    }
+    .dot-active { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .dot-configured { background: var(--yellow); }
+    .dot-disabled { background: #555; }
+    .source-count { color: var(--text-dim); margin-left: 2px; }
+
+    /* Cycle History */
+    .cycle-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+    }
+    .cycle-table th {
+      text-align: left;
+      padding: 10px 12px;
+      color: var(--text-dim);
+      font-weight: 600;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      border-bottom: 1px solid var(--border);
+    }
+    .cycle-table td {
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(42,45,58,0.5);
+    }
+    .cycle-table tr:hover { background: rgba(99,102,241,0.05); }
+    .status-ok { color: var(--green); font-weight: 600; }
+    .status-err { color: var(--red); font-weight: 600; }
+
+    /* Top Contracts */
+    .contract-row {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 16px;
+      margin-bottom: 8px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      transition: border-color 0.15s;
+    }
+    .contract-row:hover { border-color: var(--accent); }
+    .contract-info { flex: 1; }
+    .contract-question { font-weight: 600; font-size: 0.9rem; margin-bottom: 4px; }
+    .contract-stats {
+      display: flex;
+      gap: 16px;
+      font-size: 0.8rem;
+      color: var(--text-dim);
+    }
+    .contract-stats strong { color: var(--text); }
+    .contract-odds {
+      text-align: right;
+      min-width: 80px;
+    }
+    .contract-odds-value { font-size: 1.3rem; font-weight: 700; color: var(--accent); }
+    .contract-odds-label { font-size: 0.7rem; color: var(--text-dim); }
+
+    /* Alerts Banner */
+    .alert-banner {
+      background: rgba(234,179,8,0.1);
+      border: 1px solid rgba(234,179,8,0.3);
+      border-radius: 8px;
+      padding: 10px 16px;
+      margin-bottom: 16px;
+      display: none;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.85rem;
+    }
+    .alert-banner.show { display: flex; }
+    .alert-icon { font-size: 1.1rem; }
+    .alert-text { flex: 1; }
+    .alert-text strong { color: var(--yellow); }
+
+    /* Cost Tracker */
+    .cost-chip {
+      font-size: 0.75rem;
+      padding: 3px 10px;
+      border-radius: 12px;
+      background: rgba(34,197,94,0.1);
+      color: var(--green);
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <div class="container" id="app">
+    <header>
+      <h1>Polymarket Agents Dashboard</h1>
+      <div class="stats-bar" id="stats-bar">Loading...</div>
+    </header>
+
+    <!-- ALERT BANNER -->
+    <div class="alert-banner" id="alert-banner">
+      <span class="alert-icon">&#9888;</span>
+      <span class="alert-text" id="alert-text"></span>
+      <button class="refresh-btn" onclick="document.getElementById('alert-banner').classList.remove('show')">Dismiss</button>
+    </div>
+
+    <!-- DATA SOURCES PANEL -->
+    <div class="sources-panel" id="sources-panel">
+      <div class="sources-header">
+        <h2>Data Sources</h2>
+        <div>
+          <span class="llm-badge" id="llm-badge">Loading...</span>
+          <span class="cost-chip" id="cost-chip" style="margin-left:8px"></span>
+        </div>
+      </div>
+      <div class="sources-grid" id="sources-grid">Loading...</div>
+    </div>
+
+    <!-- PROGRESS PANEL -->
+    <div class="progress-panel" id="progress-panel">
+      <div class="progress-header">
+        <h2>Pipeline Progress</h2>
+        <span class="pipeline-stage stage-idle" id="pipeline-stage">Loading...</span>
+      </div>
+      <div class="progress-bar-wrap">
+        <div class="progress-bar-fill" id="progress-bar" style="width:0%">0%</div>
+        <span class="progress-bar-label" id="progress-remaining"></span>
+      </div>
+      <div class="progress-grid" id="progress-grid">
+        <div class="progress-card">
+          <div class="progress-card-label">Contracts</div>
+          <div class="progress-card-value" id="pg-contracts">--</div>
+          <div class="progress-card-sub" id="pg-contracts-sub"></div>
+        </div>
+        <div class="progress-card">
+          <div class="progress-card-label">Posts Collected</div>
+          <div class="progress-card-value" id="pg-posts">--</div>
+          <div class="progress-card-sub" id="pg-posts-sub"></div>
+          <div class="platform-tags" id="pg-platforms"></div>
+        </div>
+        <div class="progress-card">
+          <div class="progress-card-label">Sentiment Analyzed</div>
+          <div class="progress-card-value" id="pg-sentiment">--</div>
+          <div class="progress-card-sub" id="pg-sentiment-sub"></div>
+          <div class="sentiment-breakdown" id="pg-labels"></div>
+        </div>
+        <div class="progress-card">
+          <div class="progress-card-label">Gaps Detected</div>
+          <div class="progress-card-value" id="pg-gaps">--</div>
+          <div class="progress-card-sub" id="pg-gaps-sub"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="gaps">Gaps</button>
+      <button class="tab" data-tab="contracts">Top Contracts</button>
+      <button class="tab" data-tab="sentiment">Sentiment</button>
+      <button class="tab" data-tab="cycles">Cycle History</button>
+      <button class="tab" data-tab="backtest">Backtest</button>
+    </div>
+
+    <!-- GAPS TAB -->
+    <div id="tab-gaps">
+      <div class="filters">
+        <select id="gap-type-filter">
+          <option value="">All Types</option>
+          <option value="sentiment_analysis">Sentiment Analysis</option>
+          <option value="cross_market_arbitrage">Arbitrage</option>
+          <option value="historical_pattern">Historical Pattern</option>
+        </select>
+        <input type="number" id="min-conf-filter" placeholder="Min confidence" style="width:130px" />
+        <input type="text" id="market-filter" placeholder="Search markets..." style="width:200px" />
+        <button class="secondary" id="export-csv-btn">Export CSV</button>
+        <button class="refresh-btn" id="refresh-gaps-btn">Refresh</button>
+      </div>
+      <div id="gaps-list"><div class="loading">Loading gaps...</div></div>
+    </div>
+
+    <!-- TOP CONTRACTS TAB -->
+    <div id="tab-contracts" style="display:none">
+      <div id="contracts-list"><div class="loading">Loading top contracts...</div></div>
+    </div>
+
+    <!-- CYCLE HISTORY TAB -->
+    <div id="tab-cycles" style="display:none">
+      <div id="cycles-list"><div class="loading">Loading cycle history...</div></div>
+    </div>
+
+    <!-- SENTIMENT TAB -->
+    <div id="tab-sentiment" style="display:none">
+      <div class="sentiment-controls">
+        <select id="contract-select">
+          <option value="">Select a contract...</option>
+        </select>
+        <select id="window-select">
+          <option value="6">6h</option>
+          <option value="12">12h</option>
+          <option value="24" selected>24h</option>
+          <option value="72">3d</option>
+        </select>
+        <button id="load-sentiment-btn">Load</button>
+      </div>
+      <div class="chart-container">
+        <div class="chart-title">Sentiment vs Price</div>
+        <div id="sentiment-chart-wrap">
+          <canvas id="sentiment-chart"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- BACKTEST TAB -->
+    <div id="tab-backtest" style="display:none">
+      <div class="filters">
+        <input type="number" id="bt-threshold" value="60" placeholder="Confidence threshold" style="width:160px" />
+        <input type="number" id="bt-topk" value="50" placeholder="Top K gaps" style="width:120px" />
+        <button id="run-backtest-btn">Run Backtest</button>
+      </div>
+      <div id="backtest-results"></div>
+    </div>
+  </div>
+
+  <script>
+    // ============================
+    // TAB SWITCHING
+    // ============================
+    const allTabs = ['gaps', 'contracts', 'sentiment', 'cycles', 'backtest'];
+    document.querySelectorAll('.tab').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        btn.classList.add('active');
+        const tabName = btn.dataset.tab;
+        allTabs.forEach(t => {
+          document.getElementById('tab-' + t).style.display = t === tabName ? '' : 'none';
+        });
+
+        if (tabName === 'sentiment' && !contractsLoaded) loadContracts();
+        if (tabName === 'contracts') loadTopContracts();
+        if (tabName === 'cycles') loadCycles();
+      });
+    });
+
+    // ============================
+    // STATS
+    // ============================
+    function loadStats() {
+      fetch('/api/stats').then(r => r.json()).then(s => {
+        document.getElementById('stats-bar').innerHTML =
+          `<span>Contracts: <strong>${s.contracts || 0}</strong></span>` +
+          `<span>Gaps: <strong>${s.detected_gaps || 0}</strong></span>` +
+          `<span>Posts: <strong>${s.social_posts || 0}</strong></span>` +
+          `<span>Sentiments: <strong>${s.sentiment_analyses || 0}</strong></span>`;
+      }).catch(() => {
+        document.getElementById('stats-bar').innerHTML = '<span>Failed to load stats</span>';
+      });
+    }
+    loadStats();
+    setInterval(loadStats, 30000);
+
+    // ============================
+    // PIPELINE PROGRESS
+    // ============================
+    function loadProgress() {
+      fetch('/api/progress').then(r => r.json()).then(p => {
+        // Stage badge
+        const stageEl = document.getElementById('pipeline-stage');
+        stageEl.textContent = p.pipeline.stage_label;
+        stageEl.className = `pipeline-stage stage-${p.pipeline.stage}`;
+        if (p.pipeline.stage === 'sentiment') stageEl.classList.add('pulse');
+
+        // Progress bar
+        const pct = p.sentiment.percent || 0;
+        const bar = document.getElementById('progress-bar');
+        bar.style.width = Math.max(pct, 2) + '%';
+        bar.textContent = pct + '%';
+        if (pct >= 95) bar.style.background = 'linear-gradient(90deg, var(--green), #4ade80)';
+
+        const remaining = p.sentiment.remaining || 0;
+        document.getElementById('progress-remaining').textContent =
+          remaining > 0 ? `${remaining.toLocaleString()} posts remaining` : '';
+
+        // Contracts card
+        document.getElementById('pg-contracts').textContent = (p.collection.contracts || 0).toLocaleString();
+        document.getElementById('pg-contracts-sub').textContent =
+          `${p.collection.active_contracts || 0} active`;
+
+        // Posts card
+        document.getElementById('pg-posts').textContent = (p.collection.total_posts || 0).toLocaleString();
+        const recent5 = p.collection.recent_posts_5m || 0;
+        document.getElementById('pg-posts-sub').textContent =
+          recent5 > 0 ? `+${recent5} in last 5 min` : 'Collection complete';
+
+        // Platform tags
+        const platEl = document.getElementById('pg-platforms');
+        const platforms = p.collection.platforms || {};
+        platEl.innerHTML = Object.entries(platforms)
+          .sort((a, b) => b[1] - a[1])
+          .map(([name, count]) => `<span class="platform-tag">${name}: ${count.toLocaleString()}</span>`)
+          .join('');
+
+        // Sentiment card
+        const analyzed = p.sentiment.analyzed || 0;
+        const total = p.collection.total_posts || 0;
+        document.getElementById('pg-sentiment').textContent =
+          `${analyzed.toLocaleString()} / ${total.toLocaleString()}`;
+        const recentSent = p.sentiment.recent_5m || 0;
+        document.getElementById('pg-sentiment-sub').textContent =
+          recentSent > 0 ? `+${recentSent} in last 5 min` : (pct >= 95 ? 'Analysis complete' : 'Processing...');
+
+        // Sentiment label chips
+        const labelsEl = document.getElementById('pg-labels');
+        const labels = p.sentiment.labels || {};
+        labelsEl.innerHTML = Object.entries(labels)
+          .map(([label, count]) => {
+            const cls = label === 'positive' ? 'sent-positive' : label === 'negative' ? 'sent-negative' : 'sent-neutral';
+            return `<span class="sent-chip ${cls}">${label}: ${count.toLocaleString()}</span>`;
+          }).join('');
+
+        // Gaps card
+        document.getElementById('pg-gaps').textContent = (p.gaps.total || 0).toLocaleString();
+        document.getElementById('pg-gaps-sub').textContent =
+          p.gaps.unresolved > 0 ? `${p.gaps.unresolved} unresolved` : (p.gaps.total > 0 ? 'All resolved' : 'Waiting for analysis');
+
+      }).catch(() => {});
+    }
+    loadProgress();
+    setInterval(loadProgress, 10000);  // Refresh every 10 seconds
+
+    // ============================
+    // GAPS
+    // ============================
+    function confBadge(score) {
+      if (score >= 80) return `<span class="badge badge-high">${score}</span>`;
+      if (score >= 60) return `<span class="badge badge-med">${score}</span>`;
+      return `<span class="badge badge-low">${score}</span>`;
+    }
+
+    function loadGaps() {
+      const gapType = document.getElementById('gap-type-filter').value;
+      const minConf = document.getElementById('min-conf-filter').value || '0';
+      const market = document.getElementById('market-filter').value;
+
+      const params = new URLSearchParams({ limit: '50', min_confidence: minConf });
+      if (gapType) params.set('gap_type', gapType);
+      if (market) params.set('market', market);
+
+      document.getElementById('gaps-list').innerHTML = '<div class="loading">Loading gaps...</div>';
+
+      fetch(`/api/gaps?${params}`).then(r => r.json()).then(data => {
+        const gaps = data.gaps || [];
+        if (gaps.length === 0) {
+          document.getElementById('gaps-list').innerHTML =
+            '<div class="empty-state"><p>No gaps found matching your filters.</p>' +
+            '<p style="font-size:0.85rem;margin-top:8px">Try lowering the confidence threshold or changing the gap type.</p></div>';
+          return;
+        }
+
+        let html = '';
+        gaps.forEach(g => {
+          const typeName = (g.gap_type || '').replace(/_/g, ' ');
+          const marketOdds = g.market_odds != null ? `<span>Market: <strong>${(g.market_odds * 100).toFixed(1)}%</strong></span>` : '';
+          const impliedOdds = g.implied_odds != null ? `<span>Implied: <strong>${(g.implied_odds * 100).toFixed(1)}%</strong></span>` : '';
+          const edge = g.edge_percentage != null ? `<span>Edge: <strong>${Number(g.edge_percentage).toFixed(1)}%</strong></span>` : '';
+          const sources = g.social_sources_count != null ? `<span>Sources: <strong>${g.social_sources_count}</strong></span>` : '';
+          const explanation = g.explanation ? `<div class="gap-explanation">${g.explanation.substring(0, 200)}</div>` : '';
+
+          html += `
+            <div class="gap-card">
+              <div class="gap-header">
+                <div class="gap-title">${g.contract_title || 'Unknown Contract'}</div>
+                <div>
+                  <span class="badge badge-type">${typeName}</span>
+                  ${confBadge(g.confidence_score)}
+                </div>
+              </div>
+              <div class="gap-meta">${marketOdds}${impliedOdds}${edge}${sources}</div>
+              ${explanation}
+            </div>`;
+        });
+        document.getElementById('gaps-list').innerHTML = html;
+      }).catch(() => {
+        document.getElementById('gaps-list').innerHTML = '<div class="empty-state">Error loading gaps.</div>';
+      });
+    }
+
+    loadGaps();
+    document.getElementById('gap-type-filter').addEventListener('change', loadGaps);
+    document.getElementById('min-conf-filter').addEventListener('change', loadGaps);
+    document.getElementById('market-filter').addEventListener('input', debounce(loadGaps, 500));
+    document.getElementById('refresh-gaps-btn').addEventListener('click', loadGaps);
+
+    document.getElementById('export-csv-btn').addEventListener('click', () => {
+      const minConf = document.getElementById('min-conf-filter').value || '50';
+      const gapType = document.getElementById('gap-type-filter').value;
+      const params = new URLSearchParams({ min_confidence: minConf });
+      if (gapType) params.set('gap_type', gapType);
+      window.open(`/api/gaps/export?${params}`, '_blank');
+    });
+
+    function debounce(fn, ms) {
+      let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+    }
+
+    // ============================
+    // SENTIMENT
+    // ============================
+    let contractsLoaded = false;
+    let sentimentChart = null;
+
+    function loadContracts() {
+      fetch('/api/contracts?limit=50').then(r => r.json()).then(d => {
+        const sel = document.getElementById('contract-select');
+        (d.contracts || []).forEach(c => {
+          const opt = document.createElement('option');
+          opt.value = c.id;
+          opt.textContent = c.question;
+          sel.appendChild(opt);
+        });
+        contractsLoaded = true;
+      }).catch(() => {});
+    }
+
+    document.getElementById('load-sentiment-btn').addEventListener('click', () => {
+      const contractId = document.getElementById('contract-select').value;
+      const windowHours = document.getElementById('window-select').value;
+      if (!contractId) return;
+
+      fetch(`/api/sentiment/${contractId}?window_hours=${windowHours}`)
+        .then(r => r.json())
+        .then(data => {
+          const sentiments = data.sentiment_data || [];
+          const odds = data.odds_data || [];
+
+          // Build merged time series
+          const allTimes = new Set();
+          sentiments.forEach(s => allTimes.add(s.time));
+          odds.forEach(o => allTimes.add(o.time));
+          const sorted = [...allTimes].sort();
+
+          const sentMap = {};
+          sentiments.forEach(s => sentMap[s.time] = s.score);
+          const oddsMap = {};
+          odds.forEach(o => oddsMap[o.time] = o.yes_probability);
+
+          const labels = sorted.map(t => new Date(t).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}));
+          const sentData = sorted.map(t => sentMap[t] ?? null);
+          const oddsData = sorted.map(t => oddsMap[t] ?? null);
+
+          if (sentimentChart) sentimentChart.destroy();
+
+          sentimentChart = new Chart(document.getElementById('sentiment-chart'), {
+            type: 'line',
+            data: {
+              labels,
+              datasets: [
+                {
+                  label: 'Sentiment',
+                  data: sentData,
+                  borderColor: '#6366f1',
+                  backgroundColor: 'rgba(99,102,241,0.1)',
+                  yAxisID: 'y',
+                  tension: 0.3,
+                  pointRadius: 2,
+                  spanGaps: true,
+                },
+                {
+                  label: 'Yes Price',
+                  data: oddsData,
+                  borderColor: '#22c55e',
+                  backgroundColor: 'rgba(34,197,94,0.1)',
+                  yAxisID: 'y1',
+                  tension: 0.3,
+                  pointRadius: 2,
+                  spanGaps: true,
+                }
+              ]
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              interaction: { mode: 'index', intersect: false },
+              plugins: {
+                legend: { labels: { color: '#8b8fa3' } },
+                tooltip: {
+                  backgroundColor: '#1a1d27',
+                  borderColor: '#2a2d3a',
+                  borderWidth: 1,
+                  titleColor: '#e1e4eb',
+                  bodyColor: '#e1e4eb',
+                }
+              },
+              scales: {
+                x: { ticks: { color: '#555', maxTicksLimit: 12 }, grid: { color: '#1f2230' } },
+                y: {
+                  position: 'left',
+                  min: -1, max: 1,
+                  title: { display: true, text: 'Sentiment', color: '#6366f1' },
+                  ticks: { color: '#6366f1' },
+                  grid: { color: '#1f2230' },
+                },
+                y1: {
+                  position: 'right',
+                  min: 0, max: 1,
+                  title: { display: true, text: 'Yes Price', color: '#22c55e' },
+                  ticks: { color: '#22c55e' },
+                  grid: { drawOnChartArea: false },
+                }
+              }
+            }
+          });
+        })
+        .catch(() => {});
+    });
+
+    // ============================
+    // BACKTEST
+    // ============================
+    document.getElementById('run-backtest-btn').addEventListener('click', () => {
+      const threshold = document.getElementById('bt-threshold').value || '60';
+      const topK = document.getElementById('bt-topk').value || '50';
+      const el = document.getElementById('backtest-results');
+      el.innerHTML = '<div class="loading">Running backtest...</div>';
+
+      fetch(`/api/backtest?confidence_threshold=${threshold}&top_k=${topK}`)
+        .then(r => r.json())
+        .then(r => {
+          if (r.error) {
+            el.innerHTML = `<div class="empty-state">Error: ${r.error}</div>`;
+            return;
+          }
+
+          const winColor = (r.win_rate || 0) >= 0.5 ? 'var(--green)' : 'var(--red)';
+          const edgeColor = (r.avg_edge || 0) >= 0 ? 'var(--green)' : 'var(--red)';
+          const roiColor = (r.expected_roi || 0) >= 0 ? 'var(--green)' : 'var(--red)';
+
+          let html = `
+            <div class="backtest-grid">
+              <div class="metric-card">
+                <div class="metric-value" style="color:var(--accent)">${r.total_predictions || 0}</div>
+                <div class="metric-label">Total Predictions</div>
+              </div>
+              <div class="metric-card">
+                <div class="metric-value" style="color:${winColor}">${((r.win_rate||0)*100).toFixed(1)}%</div>
+                <div class="metric-label">Win Rate</div>
+              </div>
+              <div class="metric-card">
+                <div class="metric-value" style="color:${edgeColor}">${((r.avg_edge||0)*100).toFixed(2)}%</div>
+                <div class="metric-label">Avg Edge</div>
+              </div>
+              <div class="metric-card">
+                <div class="metric-value" style="color:${roiColor}">${((r.expected_roi||0)*100).toFixed(2)}%</div>
+                <div class="metric-label">Expected ROI</div>
+              </div>
+            </div>`;
+
+          if (r.by_type && Object.keys(r.by_type).length > 0) {
+            html += '<div class="chart-container"><div class="chart-title">Performance by Gap Type</div>';
+            Object.entries(r.by_type).forEach(([type, data]) => {
+              html += `
+                <div class="backtest-type-row">
+                  <span class="type-name">${type.replace(/_/g, ' ')}</span>
+                  <span>Win: <strong>${((data.win_rate||0)*100).toFixed(1)}%</strong> | n=${data.total_predictions||0}</span>
+                </div>`;
+            });
+            html += '</div>';
+          }
+
+          el.innerHTML = html;
+        })
+        .catch(() => {
+          el.innerHTML = '<div class="empty-state">Error running backtest.</div>';
+        });
+    });
+
+    // ============================
+    // DATA SOURCES
+    // ============================
+    function loadSources() {
+      fetch('/api/sources').then(r => r.json()).then(data => {
+        // LLM badge
+        const llm = data.llm || {};
+        document.getElementById('llm-badge').textContent =
+          `LLM: ${(llm.provider || 'unknown').toUpperCase()} / ${llm.model || '?'}`;
+
+        // Source chips with detailed stats
+        const grid = document.getElementById('sources-grid');
+        const sources = data.sources || [];
+        grid.innerHTML = sources.map(s => {
+          const dotClass = s.status === 'active' ? 'dot-active' :
+                           s.status === 'configured' ? 'dot-configured' : 'dot-disabled';
+
+          const statusLabel = s.status === 'active' ? 'LIVE' :
+                              s.status === 'configured' ? 'READY' : 'OFF';
+
+          const total = s.total_posts || 0;
+          const recent = s.recent_posts || 0;
+          const recentClass = recent > 0 ? 'stat-recent' : 'stat-zero';
+
+          // Build stats line
+          let statsHtml = '';
+          if (s.type === 'market_data') {
+            statsHtml = `<span class="source-type">${s.details || s.type}</span>`;
+          } else if (total > 0) {
+            statsHtml = `<div class="source-stats">
+              <span>${total.toLocaleString()} total</span>
+              <span class="${recentClass}">${recent > 0 ? '+' + recent + '/hr' : 'idle'}</span>
+            </div>`;
+          } else {
+            statsHtml = `<span class="source-type">${statusLabel}</span>`;
+          }
+
+          return `<span class="source-chip" title="${s.name} (${s.type}) — ${statusLabel}\nTotal: ${total}\nLast hour: ${recent}">
+            <span class="source-dot ${dotClass}"></span>
+            <div style="display:flex;flex-direction:column;gap:1px;">
+              <span class="source-name">${s.name}</span>
+              ${statsHtml}
+            </div>
+          </span>`;
+        }).join('');
+      }).catch(() => {
+        document.getElementById('sources-grid').innerHTML = '<span style="color:var(--text-dim)">Failed to load</span>';
+      });
+    }
+    loadSources();
+    setInterval(loadSources, 30000);
+
+    // ============================
+    // TOP CONTRACTS
+    // ============================
+    function loadTopContracts() {
+      const el = document.getElementById('contracts-list');
+      el.innerHTML = '<div class="loading">Loading top contracts...</div>';
+
+      fetch('/api/top-contracts?limit=20').then(r => r.json()).then(data => {
+        const contracts = data.contracts || [];
+        if (contracts.length === 0) {
+          el.innerHTML = '<div class="empty-state">No contracts with social data yet.</div>';
+          return;
+        }
+
+        let html = '';
+        contracts.forEach(c => {
+          const odds = c.current_yes_odds != null ? (c.current_yes_odds * 100).toFixed(1) + '%' : '--';
+          const sentLabel = c.avg_sentiment != null
+            ? (c.avg_sentiment > 0.1 ? 'Bullish' : c.avg_sentiment < -0.1 ? 'Bearish' : 'Neutral')
+            : '--';
+          const sentColor = c.avg_sentiment != null
+            ? (c.avg_sentiment > 0.1 ? 'var(--green)' : c.avg_sentiment < -0.1 ? 'var(--red)' : 'var(--text-dim)')
+            : 'var(--text-dim)';
+
+          html += `
+            <div class="contract-row">
+              <div class="contract-info">
+                <div class="contract-question">${c.question || 'Unknown'}</div>
+                <div class="contract-stats">
+                  <span>Sentiments: <strong>${c.sentiment_count}</strong></span>
+                  <span>Gaps: <strong>${c.gap_count}</strong></span>
+                  <span>Sentiment: <strong style="color:${sentColor}">${sentLabel}</strong></span>
+                  ${c.volume_24h ? `<span>Vol 24h: <strong>$${Number(c.volume_24h).toLocaleString()}</strong></span>` : ''}
+                </div>
+              </div>
+              <div class="contract-odds">
+                <div class="contract-odds-value">${odds}</div>
+                <div class="contract-odds-label">YES price</div>
+              </div>
+            </div>`;
+        });
+        el.innerHTML = html;
+      }).catch(() => {
+        el.innerHTML = '<div class="empty-state">Error loading contracts.</div>';
+      });
+    }
+
+    // ============================
+    // CYCLE HISTORY
+    // ============================
+    function loadCycles() {
+      const el = document.getElementById('cycles-list');
+      el.innerHTML = '<div class="loading">Loading cycle history...</div>';
+
+      fetch('/api/cycles?limit=20').then(r => r.json()).then(data => {
+        const cycles = data.cycles || [];
+        if (cycles.length === 0) {
+          el.innerHTML = '<div class="empty-state">No cycles have been recorded yet. Run a cycle to see history here.</div>';
+          return;
+        }
+
+        // Compute estimated cost
+        let totalCost = 0;
+
+        let html = '<table class="cycle-table"><thead><tr>' +
+          '<th>#</th><th>Started</th><th>Duration</th><th>Status</th>' +
+          '<th>Contracts</th><th>Posts</th><th>Sentiments</th><th>Gaps</th><th>LLM</th><th>Est. Cost</th>' +
+          '</tr></thead><tbody>';
+
+        cycles.forEach(c => {
+          const started = c.started_at ? new Date(c.started_at).toLocaleString() : '--';
+          const dur = c.duration_seconds != null
+            ? (c.duration_seconds >= 60 ? Math.floor(c.duration_seconds/60) + 'm ' + Math.round(c.duration_seconds%60) + 's'
+               : Math.round(c.duration_seconds) + 's')
+            : '--';
+          const status = c.success
+            ? '<span class="status-ok">OK</span>'
+            : '<span class="status-err">ERROR</span>';
+          const llm = c.llm_provider || '--';
+
+          // Rough cost estimate: ~$0.07 per 1000 sentiments for deepseek-chat
+          let cost = 0;
+          if (c.llm_provider === 'deepseek') {
+            cost = (c.sentiments_analyzed || 0) * 0.00007 + 0.02; // base + per-sentiment
+          }
+          totalCost += cost;
+
+          html += `<tr>
+            <td>${c.cycle_number}</td>
+            <td>${started}</td>
+            <td>${dur}</td>
+            <td>${status}</td>
+            <td>${c.contracts_collected || 0}</td>
+            <td>${c.posts_collected || 0}</td>
+            <td>${c.sentiments_analyzed || 0}</td>
+            <td>${c.gaps_detected || 0}</td>
+            <td>${llm}</td>
+            <td>${cost > 0 ? '$' + cost.toFixed(2) : 'Free'}</td>
+          </tr>`;
+        });
+
+        html += '</tbody></table>';
+        el.innerHTML = html;
+
+        // Update cost chip
+        if (totalCost > 0) {
+          document.getElementById('cost-chip').textContent = `Est. spend: $${totalCost.toFixed(2)}`;
+        }
+      }).catch(() => {
+        el.innerHTML = '<div class="empty-state">Error loading cycle history.</div>';
+      });
+    }
+
+    // ============================
+    // NEW GAPS ALERT
+    // ============================
+    function checkNewGaps() {
+      fetch('/api/gaps/recent?since_hours=1').then(r => r.json()).then(data => {
+        const banner = document.getElementById('alert-banner');
+        const text = document.getElementById('alert-text');
+        if (data.count > 0) {
+          const topGap = data.gaps[0];
+          text.innerHTML = `<strong>${data.count} new gap${data.count > 1 ? 's' : ''}</strong> detected in the last hour! ` +
+            `Top: "${(topGap.contract_title || '').substring(0, 60)}..." (confidence: ${topGap.confidence_score})`;
+          banner.classList.add('show');
+        }
+      }).catch(() => {});
+    }
+    checkNewGaps();
+    setInterval(checkNewGaps, 60000); // Check every minute
+
+    // Load cost on startup
+    fetch('/api/cycles?limit=100').then(r => r.json()).then(data => {
+      const cycles = data.cycles || [];
+      let total = 0;
+      cycles.forEach(c => {
+        if (c.llm_provider === 'deepseek') {
+          total += (c.sentiments_analyzed || 0) * 0.00007 + 0.02;
+        }
+      });
+      if (total > 0) {
+        document.getElementById('cost-chip').textContent = `Est. spend: $${total.toFixed(2)}`;
+      }
+    }).catch(() => {});
+  </script>
+</body>
+</html>

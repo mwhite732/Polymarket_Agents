@@ -259,31 +259,40 @@ class PolymarketAPI:
 
             # Get current odds from outcomes
             outcomes = market.get('outcomes', [])
+            outcome_prices = market.get('outcomePrices', [])
             yes_odds = None
             no_odds = None
 
-            if len(outcomes) >= 2:
-                # Typically outcomes[0] is YES, outcomes[1] is NO
+            # Method 1: outcomePrices array (most common from Gamma API)
+            if outcome_prices and len(outcome_prices) >= 2:
                 try:
-                    # Handle both dict and string outcomes
+                    yes_odds = Decimal(str(outcome_prices[0]))
+                    no_odds = Decimal(str(outcome_prices[1]))
+                except (ValueError, TypeError):
+                    pass
+
+            # Method 2: outcomes as dicts with .price (fallback)
+            if yes_odds is None and len(outcomes) >= 2:
+                try:
                     outcome_0 = outcomes[0]
                     outcome_1 = outcomes[1]
-
-                    # If outcomes are dictionaries
                     if isinstance(outcome_0, dict) and isinstance(outcome_1, dict):
-                        yes_price = float(outcome_0.get('price', 0))
-                        no_price = float(outcome_1.get('price', 0))
-
-                        # Convert price to odds (price is probability)
-                        yes_odds = Decimal(str(yes_price))
-                        no_odds = Decimal(str(no_price))
-                    # If outcomes are strings, try to parse as token IDs
-                    elif isinstance(outcome_0, str) or isinstance(outcome_1, str):
-                        logger.debug(f"Outcomes are strings (token IDs), fetching prices separately")
-                        # We'll skip odds for now, or fetch them via a separate price API call
-                        pass
+                        yes_odds = Decimal(str(outcome_0.get('price', 0)))
+                        no_odds = Decimal(str(outcome_1.get('price', 0)))
                 except (ValueError, TypeError, KeyError, AttributeError) as e:
                     logger.debug(f"Could not parse outcome prices: {e}")
+
+            # Extract category from events array (Gamma API nests it there)
+            category = market.get('category', 'Unknown')
+            if category == 'Unknown':
+                events = market.get('events', [])
+                if events and isinstance(events, list):
+                    for ev in events:
+                        if isinstance(ev, dict):
+                            cat = ev.get('category') or ev.get('title') or ev.get('slug', '')
+                            if cat:
+                                category = cat
+                                break
 
             # Get volume and liquidity
             volume_24h = market.get('volume24hr', 0)
@@ -294,7 +303,7 @@ class PolymarketAPI:
                 'question': question,
                 'description': description,
                 'end_date': end_date,
-                'category': market.get('category', 'Unknown'),
+                'category': category,
                 'current_yes_odds': yes_odds,
                 'current_no_odds': no_odds,
                 'volume_24h': Decimal(str(volume_24h)) if volume_24h else None,
@@ -307,6 +316,75 @@ class PolymarketAPI:
             logger.error(f"Error parsing market data: {e}")
             logger.debug(f"Market data type: {type(market)}, value: {str(market)[:200]}")
             return {}
+
+    def get_market_comments(self, condition_id: str, limit: int = 50) -> List[Dict]:
+        """
+        Fetch comments/activity for a Polymarket market.
+
+        Uses the Gamma API activity endpoint to get user comments and discussions.
+
+        Args:
+            condition_id: Market condition ID or slug
+            limit: Maximum comments to return
+
+        Returns:
+            List of comment dicts with post_id, content, author, posted_at, platform
+        """
+        comments = []
+
+        try:
+            # Polymarket Gamma API exposes activity/comments per market
+            url = f"{self.gamma_url}/markets/{condition_id}/activity"
+            params = {'limit': limit}
+
+            try:
+                response = self._make_request(url, params)
+            except Exception:
+                # Fallback: try the event-level comments endpoint
+                url = f"{self.gamma_url}/events/{condition_id}/comments"
+                response = self._make_request(url, params)
+
+            if not response:
+                return []
+
+            activities = response if isinstance(response, list) else response.get('data', [])
+
+            for item in activities:
+                # Activity items may be comments, trades, or other events
+                content = item.get('content') or item.get('body') or item.get('text', '')
+                if not content or len(content.strip()) < 5:
+                    continue
+
+                comment_id = item.get('id') or item.get('_id', '')
+                author = (item.get('user', {}).get('username')
+                          or item.get('username')
+                          or item.get('author', 'anonymous'))
+
+                posted_at_str = item.get('created_at') or item.get('createdAt') or item.get('timestamp')
+                if posted_at_str:
+                    try:
+                        posted_at = datetime.fromisoformat(posted_at_str.replace('Z', '+00:00'))
+                    except (ValueError, AttributeError):
+                        posted_at = datetime.now(timezone.utc)
+                else:
+                    posted_at = datetime.now(timezone.utc)
+
+                comments.append({
+                    'post_id': f"polymarket_comment_{comment_id}",
+                    'platform': 'polymarket_comment',
+                    'author': str(author),
+                    'content': content.strip(),
+                    'posted_at': posted_at,
+                    'url': f"https://polymarket.com/event/{condition_id}",
+                    'engagement_score': int(item.get('likes', 0)) + int(item.get('replies', 0)) * 2,
+                })
+
+            logger.info(f"Fetched {len(comments)} comments for market {condition_id[:20]}")
+
+        except Exception as e:
+            logger.debug(f"Could not fetch Polymarket comments for {condition_id}: {e}")
+
+        return comments
 
     def search_markets(self, query: str, limit: int = 10) -> List[Dict]:
         """

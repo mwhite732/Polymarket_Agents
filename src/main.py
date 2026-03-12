@@ -14,7 +14,8 @@ from .agents import (
     ReportingAgent
 )
 from .config import get_settings
-from .database import init_database
+from .database import init_database, get_db_manager
+from .database.models import CycleRun
 from .utils.logger import setup_logger, get_logger
 
 
@@ -52,6 +53,7 @@ class PolymarketGapDetector:
         self.gap_detector = GapDetectionAgent()
         self.reporter = ReportingAgent()
 
+        self.cycle_count = 0
         self.logger.info("All agents initialized successfully")
 
     def run_single_cycle(self) -> dict:
@@ -61,9 +63,11 @@ class PolymarketGapDetector:
         Returns:
             Dictionary with cycle results
         """
+        self.cycle_count += 1
         cycle_start = time.time()
+        cycle_started_at = datetime.utcnow()
         self.logger.info("=" * 80)
-        self.logger.info("STARTING NEW ANALYSIS CYCLE")
+        self.logger.info(f"STARTING ANALYSIS CYCLE #{self.cycle_count}")
         self.logger.info("=" * 80)
 
         results = {
@@ -109,8 +113,27 @@ class PolymarketGapDetector:
 
             self.logger.info(f"✓ Detected {len(gaps)} pricing gaps")
 
-            # Step 4: Reporting
-            self.logger.info("\n[STEP 4/4] Generating Report")
+            # Step 4.5: Backtesting (optional)
+            if self.settings.enable_backtesting:
+                try:
+                    self.logger.info("\n[STEP 4.5] Running Backtest")
+                    self.logger.info("-" * 80)
+                    from .analysis import Backtester
+                    backtester = Backtester()
+                    backtest = backtester.run_backtest(
+                        confidence_threshold=self.settings.min_confidence_score,
+                    )
+                    results['backtest'] = {
+                        'total_predictions': backtest.get('total_predictions', 0),
+                        'win_rate': backtest.get('win_rate', 0),
+                    }
+                    self.logger.info(f"✓ Backtest: {backtest.get('total_predictions', 0)} predictions, "
+                                     f"win rate {backtest.get('win_rate', 0):.1%}")
+                except Exception as e:
+                    self.logger.warning(f"Backtest skipped: {e}")
+
+            # Step 5: Reporting
+            self.logger.info("\n[STEP 5/5] Generating Report")
             self.logger.info("-" * 80)
             ranked_gaps = self.reporter.run()
             results['report'] = {
@@ -128,6 +151,33 @@ class PolymarketGapDetector:
         except Exception as e:
             self.logger.error(f"Error during analysis cycle: {e}", exc_info=True)
             results['errors'].append(str(e))
+
+        # Save cycle run to database
+        try:
+            db = get_db_manager()
+            with db.get_session() as session:
+                cycle_run = CycleRun(
+                    cycle_number=self.cycle_count,
+                    started_at=cycle_started_at,
+                    finished_at=datetime.utcnow(),
+                    duration_seconds=results.get('duration_seconds', round(time.time() - cycle_start, 2)),
+                    success=results.get('success', False),
+                    contracts_collected=results.get('collection', {}).get('contracts_collected', 0),
+                    posts_collected=results.get('collection', {}).get('social_posts', 0),
+                    sentiments_analyzed=results.get('sentiment', {}).get('contracts_analyzed', 0),
+                    gaps_detected=results.get('gaps', {}).get('total_gaps', 0),
+                    llm_provider=self.settings.llm_provider,
+                    errors=results.get('errors') if results.get('errors') else None,
+                    cycle_metadata={
+                        'gaps_by_type': results.get('gaps', {}).get('by_type', {}),
+                        'backtest': results.get('backtest', {}),
+                    },
+                )
+                session.add(cycle_run)
+                session.commit()
+                self.logger.info(f"Cycle #{self.cycle_count} saved to history")
+        except Exception as e:
+            self.logger.warning(f"Failed to save cycle history: {e}")
 
         return results
 
@@ -222,6 +272,9 @@ def main():
             detector.run_demo()
         elif mode == "once":
             detector.run_single_cycle()
+        elif mode == "dashboard":
+            from .dashboard.app import start_dashboard
+            start_dashboard()
         else:
             detector.run_continuous()
 

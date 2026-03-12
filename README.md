@@ -2,62 +2,82 @@
 
 An intelligent multi-agent system that identifies pricing inefficiencies in Polymarket prediction markets by analyzing contract data and social media sentiment in real-time.
 
-**Recent changes:** See [CHANGELOG.md](CHANGELOG.md) for bug fixes and improvements (429 handling, data loss fix, RSS dedup, gap deduplication, configurable social coverage, etc.).
-
-## 🆓 Run Completely FREE with Ollama!
-
-**NEW**: You can now run this system with **zero API costs** using Ollama (local LLMs).
-
-**Two Options:**
-1. **Ollama (FREE)** - Uses models like Llama 3.1, Mistral, Phi-3 locally
-2. **OpenAI (PAID)** - Uses GPT-4 API (~$15-45/month)
-
-For free setup, see [OLLAMA_SETUP.md](OLLAMA_SETUP.md) 🚀
+**Latest:** See [CHANGELOG.md](CHANGELOG.md) for the full v2.0 release notes — 5 new data sources, live dashboard, DeepSeek LLM, ensemble sentiment, smart contract selection, backtesting, and more.
 
 ## Architecture Overview
 
 This system uses **CrewAI** as the agentic framework for coordinating four specialized agents:
 
-1. **Data Collection Agent**: Fetches Polymarket contracts and social media data
-2. **Sentiment Analysis Agent**: Analyzes social sentiment using LLM
-3. **Gap Detection Agent**: Identifies pricing inefficiencies across four categories
+1. **Data Collection Agent**: Fetches Polymarket contracts and social media data from 8 sources
+2. **Sentiment Analysis Agent**: Analyzes social sentiment using ensemble methods (VADER + TextBlob + LLM)
+3. **Gap Detection Agent**: Identifies pricing inefficiencies across four categories with dynamic confidence scoring
 4. **Ranking & Reporting Agent**: Prioritizes and formats opportunities
 
-### Why CrewAI?
-- Purpose-built for multi-agent orchestration
-- Native support for agent collaboration and task delegation
-- Clean separation of concerns between agents
-- Easy integration with LLM providers
+### Data Sources (8 total)
+
+| Source | Type | Cost | Description |
+|--------|------|------|-------------|
+| **Polymarket** | Market data | Free | Contract odds, volume, liquidity via Gamma API |
+| **Bluesky** | Social | Free | Public posts via AT Protocol |
+| **GDELT** | News | Free | Global news monitoring, 65+ languages |
+| **RSS Feeds** | News | Free | Reuters, BBC, CNN, AP, Google News |
+| **Polymarket Comments** | Social | Free | Comments on Polymarket markets |
+| **X Mirror (Nitter)** | Social | Free | Public tweets via Nitter mirrors (fallback) |
+| **Tavily** | Web search | Paid | Real-time web search API |
+| **Grok/xAI** | Social | Paid | X/Twitter sentiment via xAI API |
+
+All paid sources are optional — system degrades gracefully with missing API keys.
 
 ### LLM Options
 
-**Option 1: Ollama (Recommended for getting started)**
-- ✅ 100% FREE - No API costs
-- ✅ Privacy - Data stays on your machine
-- ✅ Fast - No network latency
-- ✅ Quality - Llama 3.1 and Qwen 2.5 perform excellently
-- 📖 See [OLLAMA_SETUP.md](OLLAMA_SETUP.md)
+| Provider | Cost | Speed | Quality | Config |
+|----------|------|-------|---------|--------|
+| **DeepSeek** (Recommended) | ~$0.50/cycle | Fast | Excellent | `LLM_PROVIDER=deepseek` |
+| **Ollama** (Free) | $0 | Moderate | Good | `LLM_PROVIDER=ollama` |
+| **OpenAI** | ~$0.30/cycle | Fast | Excellent | `LLM_PROVIDER=openai` |
 
-**Option 2: OpenAI GPT-4 (Premium quality)**
-- Superior reasoning for complex gap detection
-- Slightly more nuanced explanations
-- ~10% better accuracy
-- Costs ~$0.10-0.30 per cycle
+The system uses `get_fast_llm()` (always Ollama) for cheap tasks like keyword extraction, and the primary LLM for complex sentiment/gap analysis.
+
+### Smart Contract Selection
+
+Instead of analyzing every contract equally, the system uses a filter-and-rank approach:
+
+1. **Fetch** the full universe (500+ active contracts) from Polymarket
+2. **Store all** in the database for historical odds tracking
+3. **Filter out garbage**: dead markets, no-odds contracts, basically-resolved (97%+/3%-)
+4. **Rank remaining** by composite score and process best-first:
+   - Volume (30%) — actively traded markets
+   - Volatility (25%) — recent price movement / breaking news
+   - Uncertainty (20%) — mid-range odds with room for mispricing
+   - Near-expiry (10%) — resolving soon, most actionable
+   - Liquidity + spread (15%) — tradeable markets
+
+### Dual Search Strategy
+
+Each social source performs two searches per contract:
+- **Keyword search** — extracted topic keywords for broad sentiment
+- **Contract title search** — the actual Polymarket question to find people discussing the specific bet
+
+GDELT and RSS use keyword-only since news articles cover topics, not bet titles.
 
 ## Features
 
-- **Real-time Monitoring**: Continuous polling of active Polymarket contracts with automatic expired contract filtering
-- **Multi-source Sentiment**: Aggregates signals from RSS news feeds (Reuters, BBC, CNN, AP, Google News), Bluesky, and optionally Twitter/X and Reddit
-- **Batched LLM Analysis**: Sends multiple posts per LLM call for significantly faster sentiment processing
-- **Four Gap Types** (all implemented):
+- **Real-time Monitoring**: Continuous polling with configurable intervals and interactive mode
+- **8-Source Data Pipeline**: Social media, news, web search, and market data aggregation
+- **Ensemble Sentiment Analysis**: VADER + TextBlob + LLM weighted combination with rolling windows
+- **Four Gap Types**:
   - Sentiment-Probability Mismatches
   - Information Asymmetry Detection
-  - Cross-Market Arbitrage (compares prices across Kalshi and Manifold Markets)
+  - Cross-Market Arbitrage (Kalshi + Manifold Markets)
   - Historical Pattern Deviations
-- **Cross-Market Arbitrage**: Searches Kalshi and Manifold Markets for equivalent contracts, uses LLM to confirm matches, and flags pricing discrepancies exceeding a configurable threshold
-- **Confidence Scoring**: 0-100 scale for each identified gap
-- **PostgreSQL Storage**: Historical data for trend analysis
-- **Ethical Data Collection**: Respects rate limits and platform ToS
+- **Dynamic Confidence Scoring**: Multi-factor scoring considering gap size, data volume, source diversity, contract features
+- **Contract Feature Engineering**: Volatility, momentum, time-to-expiry, spread analysis
+- **Backtesting Framework**: Win rate and edge analysis on resolved predictions
+- **Live Dashboard**: FastAPI web interface with gap explorer, sentiment charts, cycle history, data source monitoring
+- **CSV Export**: Download filtered gaps for external analysis
+- **Cycle History Tracking**: Every pipeline run logged with performance metrics
+- **PostgreSQL Storage**: Full historical data for trend analysis
+- **Ethical Data Collection**: Rate limiting, robots.txt compliance, platform ToS adherence
 
 ## Prerequisites
 
@@ -66,224 +86,171 @@ This system uses **CrewAI** as the agentic framework for coordinating four speci
 - PostgreSQL 12+
 
 **LLM (choose one):**
-- **Ollama** (FREE) - [Install guide](OLLAMA_SETUP.md)
-- **OpenAI API key** (PAID) - From platform.openai.com
+- **DeepSeek** (Recommended) — Sign up at platform.deepseek.com
+- **Ollama** (FREE) — [Install guide](OLLAMA_SETUP.md)
+- **OpenAI** (Paid) — From platform.openai.com
 
-**Optional (for better data):**
-- Bluesky account (free - create at bsky.app, then generate an app password)
-- Twitter API credentials
-- Reddit API credentials
+**Optional data sources:**
+- Bluesky account (free — create at bsky.app)
+- Tavily API key (from tavily.com)
+- Grok/xAI API key (from x.ai)
+- FMP API key (from financialmodelingprep.com)
 
 ## Installation
 
 1. **Clone the repository**
 ```bash
-cd c:\Users\Matt\Documents\GitHub\Polymarket_Agents
+git clone https://github.com/mwhite732/Polymarket_Agents.git
+cd Polymarket_Agents
 ```
 
-2. **Create virtual environment**
-```bash
-python -m venv venv
-venv\Scripts\activate  # Windows
-# or
-source venv/bin/activate  # Linux/Mac
-```
-
-3. **Install dependencies**
+2. **Install dependencies**
 ```bash
 pip install -r requirements.txt
 ```
 
-4. **Set up PostgreSQL database**
+3. **Set up PostgreSQL database**
 ```bash
-# Create database
 createdb polymarket_gaps
-
-# Run migrations
 psql -d polymarket_gaps -f migrations/init_db.sql
+psql -d polymarket_gaps -f migrations/002_upgrade_schema.sql
+psql -d polymarket_gaps -f migrations/003_cycle_runs.sql
 ```
 
-5. **Configure environment variables**
+4. **Configure environment variables**
 ```bash
 cp config/.env.example .env
-# Edit .env with your API keys and database credentials
+# Edit .env with your credentials
 ```
 
 ## Configuration
 
-Edit the `.env` file with your credentials:
-
-### Option 1: Using Ollama (FREE)
+Edit the `.env` file:
 
 ```env
 # Database
 DATABASE_URL=postgresql://postgres:password@localhost:5432/polymarket_gaps
 
-# LLM - Use FREE local Ollama
-LLM_PROVIDER=ollama
-OLLAMA_MODEL=llama3.1:8b
+# LLM Provider (deepseek, ollama, or openai)
+LLM_PROVIDER=deepseek
+DEEPSEEK_API_KEY=your_key_here
+DEEPSEEK_MODEL=deepseek-chat
 
-# Bluesky (Free - create account at bsky.app)
-BLUESKY_HANDLE=yourhandle.bsky.social    # Optional
-BLUESKY_APP_PASSWORD=your-app-password   # Optional
+# Ollama fallback (used for cheap tasks regardless of primary LLM)
+OLLAMA_MODEL=qwen2.5:7b
 
-# Social Media (Optional)
-TWITTER_BEARER_TOKEN=your_twitter_token  # Optional
-REDDIT_CLIENT_ID=your_reddit_client_id   # Optional
-REDDIT_CLIENT_SECRET=your_reddit_secret  # Optional
+# Free data sources (no keys needed)
+ENABLE_GDELT=true
+ENABLE_X_MIRROR=true
 
-# Cross-Market Arbitrage (enabled by default, no keys needed)
-ENABLE_KALSHI=true
-ENABLE_MANIFOLD=true
-ARBITRAGE_MIN_EDGE=0.10  # 10% minimum price difference to flag
-```
+# Optional paid data sources
+TAVILY_API_KEY=your_key_here
+ENABLE_TAVILY=true
 
-See [OLLAMA_SETUP.md](OLLAMA_SETUP.md) for Ollama installation.
+# Bluesky (free — create account at bsky.app)
+BLUESKY_HANDLE=yourhandle.bsky.social
+BLUESKY_APP_PASSWORD=your-app-password
 
-### Option 2: Using OpenAI (PAID)
-
-```env
-# Database
-DATABASE_URL=postgresql://postgres:password@localhost:5432/polymarket_gaps
-
-# LLM - Use OpenAI API
-LLM_PROVIDER=openai
-OPENAI_API_KEY=your_openai_api_key_here
-
-# System Settings
-POLLING_INTERVAL=300  # seconds
-MAX_CONTRACTS_PER_CYCLE=20
+# System settings
+POLLING_INTERVAL=300
+MAX_CONTRACTS_PER_CYCLE=100
+ENABLE_BACKTESTING=true
+ENABLE_ENSEMBLE_SENTIMENT=true
 ```
 
 ## Usage
 
-### Basic Run
+### Interactive Mode (Recommended)
 ```bash
-python src/main.py
+python run.py
+# Runs one cycle, prompts before next. Dashboard stays alive at http://localhost:8000
 ```
 
-### Output Format
+### Other Modes
+```bash
+python run.py continuous    # Non-stop monitoring
+python run.py once          # Single cycle, then exit
+python run.py demo          # Demo with verbose output
+python run.py dashboard     # Dashboard only (no analysis)
 ```
-[2026-02-05 10:30:45] POLYMARKET PRICING GAPS - Real-time Analysis
-================================================================
 
-RANK #1 - Confidence: 87/100
-Contract: "Will Bitcoin reach $100k in 2026?" (Current: Yes 45% / No 55%)
-Gap Type: Sentiment-Probability Mismatch
-Explanation: Social sentiment overwhelmingly bullish (82% positive) while
-market odds only at 45%. Recent announcements from major institutions not
-yet reflected in pricing.
-Evidence:
-  - Twitter: 127 bullish posts vs 23 bearish (last 6h)
-  - Reddit: r/cryptocurrency highly optimistic (avg sentiment: 0.76)
-  - Recent news: 3 major adoption announcements in last 24h
----
+### Dashboard
 
-RANK #2 - Confidence: 73/100
-[...]
-```
+Access the live dashboard at `http://localhost:8000` after starting any mode. Features:
+- **Gap Explorer** — filterable list with confidence badges
+- **Top Contracts** — ranked by social buzz and gap activity
+- **Sentiment vs Price** — per-contract chart overlay
+- **Cycle History** — performance log with timing and cost estimates
+- **Data Sources** — live status of all 8 sources
+- **Alerts** — notification banner for newly detected gaps
+- **CSV Export** — download gaps at `/api/gaps/export`
 
 ## Project Structure
 
 ```
 polymarket_agents/
 ├── src/
-│   ├── agents/              # Agent implementations
-│   │   ├── data_collector.py       # Fetches contracts + social media data
-│   │   ├── sentiment_analyzer.py   # Batched LLM sentiment analysis
-│   │   ├── gap_detector.py         # Gap detection + cross-market arbitrage
-│   │   └── reporter.py             # Ranking and formatted output
-│   ├── database/            # Database models and connection
-│   │   ├── models.py
-│   │   └── connection.py
-│   ├── services/            # External API integrations
-│   │   ├── polymarket_api.py       # Polymarket CLOB + Gamma API
-│   │   ├── kalshi_api.py           # Kalshi prediction market API
-│   │   ├── manifold_api.py         # Manifold Markets API
-│   │   ├── rss_news_scraper.py     # Free RSS news feeds
-│   │   ├── bluesky_scraper.py      # Bluesky AT Protocol API
-│   │   ├── twitter_scraper.py      # Twitter/X API (optional)
-│   │   └── reddit_scraper.py       # Reddit API (optional)
-│   ├── utils/               # Utility functions
+│   ├── agents/                    # CrewAI agent implementations
+│   │   ├── data_collector.py            # 8-source data collection + smart contract selection
+│   │   ├── sentiment_analyzer.py        # Ensemble sentiment (VADER + TextBlob + LLM)
+│   │   ├── gap_detector.py              # Gap detection + dynamic confidence scoring
+│   │   └── reporter.py                  # Ranking and formatted output
+│   ├── database/                  # SQLAlchemy models and connection
+│   │   ├── models.py                    # Contract, SocialPost, DetectedGap, CycleRun, etc.
+│   │   └── connection.py               # Database manager with session handling
+│   ├── services/                  # External API integrations
+│   │   ├── polymarket_api.py            # Polymarket CLOB + Gamma API + comments
+│   │   ├── bluesky_scraper.py           # Bluesky AT Protocol
+│   │   ├── rss_news_scraper.py          # Free RSS news feeds
+│   │   ├── gdelt_api.py                 # GDELT global news (free)
+│   │   ├── tavily_search.py             # Tavily web search (paid)
+│   │   ├── grok_sentiment.py            # Grok/xAI X sentiment (paid)
+│   │   ├── x_mirror_scraper.py          # Nitter/XCancel tweet scraper (free)
+│   │   ├── fmp_api.py                   # Financial Modeling Prep (paid)
+│   │   ├── kalshi_api.py                # Kalshi cross-market arbitrage
+│   │   ├── manifold_api.py              # Manifold Markets cross-reference
+│   │   ├── twitter_scraper.py           # Twitter/X API (optional)
+│   │   └── reddit_scraper.py            # Reddit API (optional)
+│   ├── analysis/                  # Analysis modules
+│   │   └── backtester.py                # Backtesting framework
+│   ├── features/                  # Feature engineering
+│   │   └── contract_features.py         # Contract-level feature computation
+│   ├── sentiment/                 # Sentiment analysis
+│   │   └── ensemble_sentiment.py        # VADER + TextBlob ensemble
+│   ├── scoring/                   # Confidence scoring
+│   │   └── confidence_scorer.py         # Dynamic multi-factor scoring
+│   ├── dashboard/                 # Web dashboard
+│   │   ├── app.py                       # FastAPI backend (8 endpoints)
+│   │   └── static/index.html            # Frontend (vanilla JS + Chart.js)
+│   ├── utils/
 │   │   └── logger.py
-│   ├── config.py            # Pydantic settings management
-│   └── main.py              # Main orchestration
+│   ├── config.py                  # Pydantic settings (40+ config fields)
+│   └── main.py                    # Main orchestration + cycle tracking
+├── migrations/
+│   ├── init_db.sql                # Initial schema
+│   ├── 002_upgrade_schema.sql     # v2.0 schema additions
+│   └── 003_cycle_runs.sql         # Cycle history table
 ├── config/
 │   └── .env.example
-├── migrations/
-│   └── init_db.sql
 ├── requirements.txt
+├── run.py                         # Entry point with multiple run modes
+├── CHANGELOG.md
 └── README.md
 ```
 
 ## Database Schema
 
-### contracts
-- Stores Polymarket contract data with historical odds
-
-### social_posts
-- Archives social media posts with metadata
-
-### detected_gaps
-- Records identified pricing gaps with confidence scores
-
-### system_logs
-- Tracks system events and errors
-
-## Extending to Web Dashboard
-
-This system is designed for easy extension to a web interface:
-
-1. **API Layer**: Add FastAPI/Flask endpoints to expose:
-   - Real-time gap data
-   - Historical analysis
-   - Contract details
-
-2. **Frontend**: Build React/Vue dashboard to:
-   - Display live gaps
-   - Visualize sentiment trends
-   - Show historical accuracy
-
-3. **WebSocket**: For real-time updates to dashboard
-
-4. **Suggested Structure**:
-```
-├── backend/
-│   ├── api/
-│   │   └── routes.py
-│   └── websocket/
-│       └── handler.py
-└── frontend/
-    ├── src/
-    └── components/
-```
-
-## Ethical Considerations
-
-- **Rate Limiting**: All API calls respect platform limits
-- **robots.txt Compliance**: Web scraping follows robots.txt rules
-- **Terms of Service**: Implementation adheres to all platform ToS
-- **Data Privacy**: No personal data collection
-- **Transparency**: All data sources are clearly attributed
-
-## Troubleshooting
-
-### Database Connection Issues
-```bash
-# Check PostgreSQL is running
-pg_isready
-
-# Verify connection string
-psql postgresql://user:password@localhost:5432/polymarket_gaps
-```
-
-### API Rate Limits
-- System automatically backs off on rate limit errors
-- Consider increasing POLLING_INTERVAL in .env
-
-### Missing Social Media Data
-- System works with limited social data
-- Gaps will have lower confidence without social signals
+| Table | Purpose |
+|-------|---------|
+| `contracts` | Polymarket contract data with current odds, volume, liquidity, category |
+| `social_posts` | Social media posts from all 8 sources |
+| `sentiment_analysis` | Per-post sentiment scores (LLM + VADER + TextBlob + ensemble) |
+| `detected_gaps` | Pricing gaps with confidence scores and contract features |
+| `historical_odds` | Time-series odds data for trend/volatility analysis |
+| `cycle_runs` | Pipeline execution history with performance metrics |
+| `sentiment_snapshots` | Aggregated sentiment windows per contract |
+| `backtest_results` | Backtesting performance metrics |
+| `system_logs` | System events and errors |
 
 ## Development Roadmap
 
@@ -293,13 +260,33 @@ psql postgresql://user:password@localhost:5432/polymarket_gaps
 - [x] Batched LLM sentiment analysis (5x faster)
 - [x] Cross-market arbitrage detection (Kalshi + Manifold Markets)
 - [x] Expired contract filtering
-- [x] Paginated contract fetching with overfetch strategy
+- [x] Paginated contract fetching
+- [x] **DeepSeek LLM support** (v2.0)
+- [x] **5 new data sources** — Tavily, GDELT, Grok/xAI, X Mirror, FMP (v2.0)
+- [x] **Ensemble sentiment analysis** — VADER + TextBlob + LLM (v2.0)
+- [x] **Smart contract selection** — garbage filter + multi-factor ranking (v2.0)
+- [x] **Dual search strategy** — keyword + contract title search (v2.0)
+- [x] **Contract feature engineering** — volatility, momentum, time-to-expiry (v2.0)
+- [x] **Dynamic confidence scoring** — multi-factor with social source weighting (v2.0)
+- [x] **Backtesting framework** — win rate and edge analysis (v2.0)
+- [x] **FastAPI dashboard** — gap explorer, charts, cycle history, source monitoring (v2.0)
+- [x] **CSV export** for external analysis (v2.0)
+- [x] **Cycle history tracking** with cost estimation (v2.0)
+- [x] **Fixed Polymarket API parser** — odds and categories now correctly extracted (v2.0)
 - [ ] Add more social media sources (Farcaster, Lens)
 - [ ] Implement ML model for sentiment (reduce LLM costs)
-- [ ] Add backtesting framework
-- [ ] Build web dashboard
 - [ ] Add alerting system (email/Telegram)
 - [ ] Implement automated trade execution (with safeguards)
+- [ ] Add Supabase cloud database support
+- [ ] LangSmith tracing integration
+
+## Ethical Considerations
+
+- **Rate Limiting**: All API calls respect platform limits
+- **robots.txt Compliance**: Web scraping follows robots.txt rules
+- **Terms of Service**: Implementation adheres to all platform ToS
+- **Data Privacy**: No personal data collection
+- **Transparency**: All data sources are clearly attributed
 
 ## License
 

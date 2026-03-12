@@ -56,6 +56,64 @@ class DataCollectionAgent:
         except Exception as e:
             logger.warning(f"Could not initialize Bluesky scraper: {e}")
 
+        # Initialize Tavily web search (requires API key)
+        self.tavily = None
+        try:
+            from ..services import TavilySearch
+            self.tavily = TavilySearch()
+            if self.tavily.enabled:
+                logger.info("Tavily Search initialized")
+        except Exception as e:
+            logger.warning(f"Could not initialize Tavily: {e}")
+
+        # Initialize Grok X sentiment (requires API key)
+        self.grok = None
+        try:
+            from ..services import GrokSentiment
+            self.grok = GrokSentiment()
+            if self.grok.enabled:
+                logger.info("Grok X sentiment initialized")
+        except Exception as e:
+            logger.warning(f"Could not initialize Grok: {e}")
+
+        # Initialize X mirror scraper (free fallback when Grok unavailable)
+        self.x_mirror = None
+        try:
+            from ..services import XMirrorScraper
+            self.x_mirror = XMirrorScraper()
+            if self.x_mirror.enabled:
+                logger.info("X Mirror scraper initialized (Grok fallback)")
+        except Exception as e:
+            logger.warning(f"Could not initialize X mirror scraper: {e}")
+
+        # Initialize GDELT (free, no key required)
+        self.gdelt = None
+        try:
+            from ..services import GDELTAPI
+            self.gdelt = GDELTAPI()
+            if self.gdelt.enabled:
+                logger.info("GDELT API initialized (FREE geopolitical news)")
+        except Exception as e:
+            logger.warning(f"Could not initialize GDELT: {e}")
+
+        # Initialize Manifold API for comments (reuse existing if available in gap_detector)
+        self.manifold = None
+        try:
+            from ..services import ManifoldAPI
+            self.manifold = ManifoldAPI()
+            if self.manifold.enabled:
+                logger.info("Manifold API initialized for comment collection")
+        except Exception as e:
+            logger.warning(f"Could not initialize Manifold API: {e}")
+
+        # Initialize contract feature engine
+        self.feature_engine = None
+        try:
+            from ..features import ContractFeatureEngine
+            self.feature_engine = ContractFeatureEngine()
+        except Exception as e:
+            logger.warning(f"Could not initialize feature engine: {e}")
+
         logger.info("Data Collection Agent initialized")
 
     def create_crewai_agent(self) -> Agent:
@@ -75,9 +133,115 @@ class DataCollectionAgent:
             allow_delegation=False
         )
 
+    def _filter_and_rank_contracts(self, parsed_markets: List[Dict]) -> List[Dict]:
+        """
+        Filter out garbage contracts, keep everything relevant, sort best-first.
+
+        Garbage = contracts that are truly not worth social-searching:
+        - No volume AND no liquidity (dead markets nobody trades)
+        - Odds at 97%+ or 3%- (basically resolved, no mispricing possible)
+        - No odds data at all (can't analyze what we can't measure)
+
+        Everything else stays. Sorted by composite score so the most
+        interesting contracts get processed first (high volume, volatile,
+        uncertain, near-expiry).
+
+        Args:
+            parsed_markets: All parsed contract dicts (with raw_data attached)
+
+        Returns:
+            Filtered + scored list, best contracts first
+        """
+        import math
+        now = datetime.now(timezone.utc)
+
+        kept = []
+        garbage_count = 0
+
+        for c in parsed_markets:
+            raw = c.get('raw_data', {})
+            vol_24h = float(c.get('volume_24h') or 0)
+            liquidity = float(c.get('liquidity') or 0)
+            yes_odds = float(c.get('current_yes_odds') or 0)
+
+            # === GARBAGE FILTER — toss truly worthless contracts ===
+
+            # Dead market: no volume AND no liquidity
+            if vol_24h == 0 and liquidity == 0:
+                garbage_count += 1
+                continue
+
+            # No odds data — can't do gap detection without a price
+            if yes_odds == 0:
+                garbage_count += 1
+                continue
+
+            # Basically resolved: odds at extreme ends (97%+ or 3%-)
+            # No room for mispricing, social sentiment won't move these
+            if yes_odds >= 0.97 or yes_odds <= 0.03:
+                garbage_count += 1
+                continue
+
+            # === SCORING — for sort order (best first) ===
+            spread = float(raw.get('spread') or 0)
+            day_change = abs(float(raw.get('oneDayPriceChange') or 0))
+            hour_change = abs(float(raw.get('oneHourPriceChange') or 0))
+
+            end_date = c.get('end_date')
+            hours_to_expiry = None
+            if end_date:
+                delta = end_date - now
+                hours_to_expiry = max(delta.total_seconds() / 3600, 0)
+
+            # Volume (log scale)
+            vol_score = min(100, math.log10(max(vol_24h, 1)) * 20) if vol_24h > 0 else 0
+
+            # Uncertainty (50/50 = max opportunity)
+            uncertainty_score = (1 - abs(yes_odds - 0.5) * 2) * 100
+
+            # Volatility (recent price movement = breaking news / repricing)
+            volatility_score = min(100, (day_change * 500) + (hour_change * 2000))
+
+            # Time pressure (expiring within 7 days = actionable)
+            time_score = 0
+            if hours_to_expiry is not None and hours_to_expiry < 168:
+                time_score = max(0, 100 - (hours_to_expiry / 168 * 100))
+
+            # Liquidity quality
+            liq_score = min(100, math.log10(max(liquidity, 1)) * 15) if liquidity > 0 else 0
+
+            # Composite — determines processing order
+            composite = (
+                vol_score * 0.30 +
+                volatility_score * 0.25 +
+                uncertainty_score * 0.20 +
+                time_score * 0.10 +
+                liq_score * 0.10 +
+                max(0, 5 - min(50, spread * 1000)) * 0.05
+            )
+
+            c['_score'] = composite
+            kept.append(c)
+
+        # Sort best-first so most interesting contracts get social-searched first
+        kept.sort(key=lambda x: x['_score'], reverse=True)
+
+        logger.info(f"Contract filter: kept {len(kept)}, trashed {garbage_count} "
+                     f"(dead/no-odds/resolved)")
+        if kept:
+            top3 = [(s['question'][:50], f"score={s['_score']:.0f}") for s in kept[:3]]
+            bot3 = [(s['question'][:50], f"score={s['_score']:.0f}") for s in kept[-3:]]
+            logger.info(f"  Top: {top3}")
+            logger.info(f"  Bottom: {bot3}")
+
+        return kept
+
     def collect_market_data(self) -> List[Dict]:
         """
-        Collect active Polymarket contracts.
+        Collect active Polymarket contracts with smart selection.
+
+        Fetches all active markets, stores them in DB, then selects a diverse
+        representative sample for social media analysis.
 
         Returns:
             List of contract dictionaries with metadata
@@ -85,13 +249,13 @@ class DataCollectionAgent:
         logger.info("Starting market data collection...")
 
         try:
-            # Fetch more markets than needed since many will be expired
-            # and filtered out. Fetch 5x the target to ensure enough remain.
-            fetch_limit = self.settings.max_contracts_per_cycle * 5
+            # Fetch a large pool — we want the full universe to select from
+            fetch_limit = max(500, self.settings.max_contracts_per_cycle * 5)
             markets = self.polymarket.get_active_markets(
                 limit=fetch_limit
             )
 
+            all_parsed = []
             contracts_data = []
 
             with self.db_manager.get_session() as session:
@@ -104,24 +268,20 @@ class DataCollectionAgent:
                     # Skip expired contracts
                     if contract_data.get('end_date'):
                         if contract_data['end_date'] < datetime.now(timezone.utc):
-                            logger.debug(f"Skipping expired contract: {contract_data.get('question', 'Unknown')[:50]}")
                             continue
 
-                    # Check if contract exists in database
+                    # Store ALL contracts in DB (full universe for historical tracking)
                     existing = session.query(Contract).filter(
                         Contract.contract_id == contract_data['contract_id']
                     ).first()
 
                     if existing:
-                        # Update existing contract
                         for key, value in contract_data.items():
                             if key not in ['raw_data', 'created_at']:
                                 setattr(existing, key, value)
 
-                        # Record historical odds if they changed
                         if (contract_data.get('current_yes_odds') and
                             contract_data['current_yes_odds'] != existing.current_yes_odds):
-
                             historical = HistoricalOdds(
                                 contract_id=existing.id,
                                 yes_odds=contract_data['current_yes_odds'],
@@ -129,16 +289,13 @@ class DataCollectionAgent:
                                 volume=contract_data.get('volume_24h')
                             )
                             session.add(historical)
-
                         contract_obj = existing
                     else:
-                        # Create new contract (exclude raw_data which is not a model field)
                         db_data = {k: v for k, v in contract_data.items() if k != 'raw_data'}
                         contract_obj = Contract(**db_data)
                         session.add(contract_obj)
-                        session.flush()  # Get ID for historical odds
+                        session.flush()
 
-                        # Add initial historical odds
                         if contract_data.get('current_yes_odds'):
                             historical = HistoricalOdds(
                                 contract_id=contract_obj.id,
@@ -148,16 +305,36 @@ class DataCollectionAgent:
                             )
                             session.add(historical)
 
-                    contracts_data.append({
+                    all_parsed.append({
                         'id': str(contract_obj.id),
                         'contract_id': contract_obj.contract_id,
                         'question': contract_obj.question,
-                        'category': contract_obj.category
+                        'category': contract_obj.category,
+                        'current_yes_odds': contract_data.get('current_yes_odds'),
+                        'volume_24h': contract_data.get('volume_24h'),
+                        'liquidity': contract_data.get('liquidity'),
+                        'end_date': contract_data.get('end_date'),
+                        'raw_data': contract_data.get('raw_data', {}),
                     })
 
                 session.commit()
 
-            logger.info(f"Collected {len(contracts_data)} market contracts")
+            logger.info(f"Stored {len(all_parsed)} contracts in database")
+
+            # Filter out garbage, keep everything relevant, sorted best-first
+            filtered = self._filter_and_rank_contracts(all_parsed)
+
+            # Strip internal scoring fields for downstream use
+            for c in filtered:
+                contracts_data.append({
+                    'id': c['id'],
+                    'contract_id': c['contract_id'],
+                    'question': c['question'],
+                    'category': c['category'],
+                })
+
+            logger.info(f"Passing {len(contracts_data)}/{len(all_parsed)} contracts for social analysis "
+                         f"(garbage removed, best-first ordering)")
             return contracts_data
 
         except Exception as e:
@@ -178,11 +355,10 @@ class DataCollectionAgent:
 
         results = {}
         hours_back = self.settings.data_collection_lookback_hours
-        max_contracts = getattr(
-            self.settings, 'max_contracts_for_social', self.settings.max_contracts_per_cycle
-        )
 
-        for contract in contracts[:max_contracts]:
+        # Process all contracts passed in (garbage already filtered out,
+        # sorted best-first so most interesting contracts get processed first)
+        for contract in contracts:
             contract_id = contract['id']
             question = contract['question']
 
@@ -226,16 +402,37 @@ class DataCollectionAgent:
                     logger.error(f"Error collecting Reddit data: {e}")
 
             # Collect Bluesky data (FREE, always available)
+            # Keyword search + contract title search for direct bet discussion
             if self.bluesky and self.bluesky.enabled:
                 try:
+                    bsky_all = []
                     for keyword in keywords[:3]:
                         bsky_posts = self.bluesky.search_posts(
                             query=keyword,
                             max_results=25,
                             hours_back=hours_back
                         )
-                        posts.extend(bsky_posts)
-                    logger.info(f"Collected {len([p for p in posts if p.get('platform') == 'bluesky'])} Bluesky posts")
+                        bsky_all.extend(bsky_posts)
+
+                    # Title search: people discussing the actual Polymarket question
+                    title_query = question[:120].rstrip('?').strip()
+                    bsky_title = self.bluesky.search_posts(
+                        query=title_query,
+                        max_results=25,
+                        hours_back=hours_back
+                    )
+                    keyword_count = len(bsky_all)
+                    seen_ids = {p.get('post_id') for p in bsky_all}
+                    title_new = 0
+                    for p in bsky_title:
+                        if p.get('post_id') not in seen_ids:
+                            bsky_all.append(p)
+                            seen_ids.add(p.get('post_id'))
+                            title_new += 1
+
+                    posts.extend(bsky_all)
+                    logger.info(f"Collected {len(bsky_all)} Bluesky posts "
+                                f"({keyword_count} keyword + {title_new} title-search)")
                 except Exception as e:
                     logger.error(f"Error collecting Bluesky data: {e}")
 
@@ -265,6 +462,130 @@ class DataCollectionAgent:
                     logger.info(f"Collected {len(news_articles)} news articles from RSS feeds")
                 except Exception as e:
                     logger.error(f"Error collecting RSS news data: {e}")
+
+            # Collect Tavily web search data (requires API key)
+            # Keyword search + contract title search
+            if self.tavily and self.tavily.enabled:
+                try:
+                    search_query = ' '.join(keywords[:3])
+                    tavily_results = self.tavily.search(query=search_query, max_results=10)
+
+                    # Title search: find articles about the specific market question
+                    title_query = question[:120].rstrip('?').strip()
+                    tavily_title = self.tavily.search(query=title_query, max_results=5)
+                    keyword_count = len(tavily_results)
+                    seen_ids = {p.get('post_id') for p in tavily_results}
+                    title_new = 0
+                    for p in tavily_title:
+                        if p.get('post_id') not in seen_ids:
+                            tavily_results.append(p)
+                            seen_ids.add(p.get('post_id'))
+                            title_new += 1
+
+                    posts.extend(tavily_results)
+                    logger.info(f"Collected {len(tavily_results)} Tavily web results "
+                                f"({keyword_count} keyword + {title_new} title-search)")
+                except Exception as e:
+                    logger.error(f"Error collecting Tavily data: {e}")
+
+            # Collect Grok X sentiment (requires API key)
+            # Keyword search + contract title search
+            if self.grok and self.grok.enabled:
+                try:
+                    search_query = ' '.join(keywords[:3])
+                    grok_results = self.grok.analyze_x_sentiment(query=search_query)
+
+                    # Title search: X posts discussing the actual bet
+                    title_query = question[:120].rstrip('?').strip()
+                    grok_title = self.grok.analyze_x_sentiment(query=title_query)
+                    keyword_count = len(grok_results)
+                    seen_ids = {p.get('post_id') for p in grok_results}
+                    title_new = 0
+                    for p in grok_title:
+                        if p.get('post_id') not in seen_ids:
+                            grok_results.append(p)
+                            seen_ids.add(p.get('post_id'))
+                            title_new += 1
+
+                    posts.extend(grok_results)
+                    logger.info(f"Collected {len(grok_results)} Grok X posts "
+                                f"({keyword_count} keyword + {title_new} title-search)")
+                except Exception as e:
+                    logger.error(f"Error collecting Grok data: {e}")
+
+            # Collect X mirror posts (free fallback, only when Grok unavailable)
+            # Two searches: keywords for broad topic sentiment + contract title
+            # for people specifically discussing the Polymarket bet
+            if self.x_mirror and self.x_mirror.enabled:
+                try:
+                    # Search 1: keyword-based (broad topic)
+                    search_query = ' '.join(keywords[:3])
+                    mirror_results = self.x_mirror.search_posts(query=search_query)
+
+                    # Search 2: contract title (people discussing the actual bet)
+                    # Truncate long questions to keep the search focused
+                    title_query = question[:120].rstrip('?').strip()
+                    title_results = self.x_mirror.search_posts(query=title_query)
+
+                    # Deduplicate by post_id before merging
+                    keyword_count = len(mirror_results)
+                    seen_ids = {p['post_id'] for p in mirror_results}
+                    title_new = 0
+                    for p in title_results:
+                        if p['post_id'] not in seen_ids:
+                            mirror_results.append(p)
+                            seen_ids.add(p['post_id'])
+                            title_new += 1
+
+                    posts.extend(mirror_results)
+                    logger.info(f"Collected {len(mirror_results)} X mirror posts "
+                                f"({keyword_count} keyword + {title_new} title-search)")
+                except Exception as e:
+                    logger.error(f"Error collecting X mirror data: {e}")
+
+            # Collect GDELT geopolitical news (free, no key required)
+            # Keyword-only — GDELT indexes news articles, not betting markets,
+            # so contract title search won't match news headlines
+            if self.gdelt and self.gdelt.enabled:
+                try:
+                    search_query = ' '.join(keywords[:3])
+                    gdelt_results = self.gdelt.search_news(query=search_query, days_back=3)
+                    posts.extend(gdelt_results)
+                    logger.info(f"Collected {len(gdelt_results)} GDELT articles")
+                except Exception as e:
+                    logger.error(f"Error collecting GDELT data: {e}")
+
+            # Collect Polymarket comments (uses existing API, always available)
+            try:
+                poly_contract_id = contract.get('contract_id', '')
+                if poly_contract_id:
+                    poly_comments = self.polymarket.get_market_comments(
+                        condition_id=poly_contract_id, limit=30
+                    )
+                    posts.extend(poly_comments)
+                    if poly_comments:
+                        logger.info(f"Collected {len(poly_comments)} Polymarket comments")
+            except Exception as e:
+                logger.debug(f"Error collecting Polymarket comments: {e}")
+
+            # Collect Manifold comments (free, cross-reference matching markets)
+            if self.manifold and self.manifold.enabled:
+                try:
+                    # Search for matching Manifold market to get its comments
+                    search_query = ' '.join(keywords[:3])
+                    manifold_markets = self.manifold.search_markets(query=search_query, limit=3)
+                    for mm in manifold_markets:
+                        mm_id = mm.get('market_id', '')
+                        if mm_id:
+                            manifold_comments = self.manifold.get_market_comments(
+                                market_id=mm_id, limit=20
+                            )
+                            posts.extend(manifold_comments)
+                    total_mc = sum(1 for p in posts if p.get('platform') == 'manifold_comment')
+                    if total_mc:
+                        logger.info(f"Collected {total_mc} Manifold comments")
+                except Exception as e:
+                    logger.debug(f"Error collecting Manifold comments: {e}")
 
             # Store posts in database
             if posts:

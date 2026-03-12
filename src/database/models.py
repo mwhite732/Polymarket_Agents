@@ -128,10 +128,14 @@ class SentimentAnalysis(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     post_id = Column(UUID(as_uuid=True), ForeignKey('social_posts.id', ondelete='CASCADE'))
     contract_id = Column(UUID(as_uuid=True), ForeignKey('contracts.id', ondelete='CASCADE'), index=True)
-    sentiment_score = Column(DECIMAL(4, 3))  # -1.0 to 1.0
+    sentiment_score = Column(DECIMAL(4, 3))  # -1.0 to 1.0 (LLM score)
     sentiment_label = Column(String(20))  # 'positive', 'negative', 'neutral'
     confidence = Column(DECIMAL(4, 3))  # 0.0 to 1.0
     topics = Column(ARRAY(String))
+    # Ensemble sentiment scores
+    vader_score = Column(DECIMAL(4, 3))     # VADER lexicon score (-1 to 1)
+    textblob_score = Column(DECIMAL(4, 3))  # TextBlob polarity (-1 to 1)
+    ensemble_score = Column(DECIMAL(4, 3))  # Weighted average of LLM + lexicon
     analyzed_at = Column(DateTime, default=datetime.utcnow, index=True)
 
     # Relationships
@@ -174,9 +178,14 @@ class DetectedGap(Base):
     market_odds = Column(DECIMAL(5, 4))
     implied_odds = Column(DECIMAL(5, 4))  # What odds should be
     edge_percentage = Column(DECIMAL(5, 2))
+    social_sources_count = Column(Integer, default=0)  # Number of social sources contributing
+    contract_features = Column(JSONB)  # Snapshot of engineered features at detection time
     detected_at = Column(DateTime, default=datetime.utcnow, index=True)
     resolved = Column(Boolean, default=False)
     resolution_notes = Column(Text)
+    resolution_outcome = Column(String(20))  # 'correct' | 'incorrect'
+    was_correct = Column(Boolean)
+    realized_edge = Column(DECIMAL(5, 4))  # actual_prob - entry_prob at resolution
     resolved_at = Column(DateTime)
 
     # Relationships
@@ -228,4 +237,112 @@ class SystemLog(Base):
             'message': self.message,
             'log_metadata': self.log_metadata,
             'created_at': self.created_at.isoformat()
+        }
+
+
+class SentimentSnapshot(Base):
+    """Rolling sentiment window snapshot."""
+
+    __tablename__ = 'sentiment_snapshots'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    contract_id = Column(UUID(as_uuid=True), ForeignKey('contracts.id', ondelete='CASCADE'), nullable=False, index=True)
+    window_hours = Column(Integer, nullable=False)  # 6, 12, or 24
+    avg_score = Column(DECIMAL(4, 3))
+    post_count = Column(Integer, default=0)
+    positive_ratio = Column(DECIMAL(4, 3))
+    sentiment_trend = Column(DECIMAL(4, 3))  # Change over window
+    snapshot_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    # Relationships
+    contract = relationship("Contract")
+
+    def __repr__(self):
+        return f"<SentimentSnapshot(contract='{self.contract_id}', window={self.window_hours}h)>"
+
+    def to_dict(self):
+        return {
+            'id': str(self.id),
+            'contract_id': str(self.contract_id),
+            'window_hours': self.window_hours,
+            'avg_score': float(self.avg_score) if self.avg_score else None,
+            'post_count': self.post_count,
+            'positive_ratio': float(self.positive_ratio) if self.positive_ratio else None,
+            'sentiment_trend': float(self.sentiment_trend) if self.sentiment_trend else None,
+            'snapshot_at': self.snapshot_at.isoformat()
+        }
+
+
+class CycleRun(Base):
+    """Cycle execution history."""
+
+    __tablename__ = 'cycle_runs'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    cycle_number = Column(Integer, nullable=False)
+    started_at = Column(DateTime, nullable=False, index=True)
+    finished_at = Column(DateTime)
+    duration_seconds = Column(DECIMAL(10, 2))
+    success = Column(Boolean, default=False)
+    contracts_collected = Column(Integer, default=0)
+    posts_collected = Column(Integer, default=0)
+    sentiments_analyzed = Column(Integer, default=0)
+    gaps_detected = Column(Integer, default=0)
+    llm_provider = Column(String(50))
+    errors = Column(JSONB)
+    cycle_metadata = Column(JSONB)  # gap breakdown, backtest results, etc.
+
+    def __repr__(self):
+        return f"<CycleRun(#{self.cycle_number}, success={self.success})>"
+
+    def to_dict(self):
+        return {
+            'id': str(self.id),
+            'cycle_number': self.cycle_number,
+            'started_at': self.started_at.isoformat() if self.started_at else None,
+            'finished_at': self.finished_at.isoformat() if self.finished_at else None,
+            'duration_seconds': float(self.duration_seconds) if self.duration_seconds else None,
+            'success': self.success,
+            'contracts_collected': self.contracts_collected,
+            'posts_collected': self.posts_collected,
+            'sentiments_analyzed': self.sentiments_analyzed,
+            'gaps_detected': self.gaps_detected,
+            'llm_provider': self.llm_provider,
+            'errors': self.errors,
+            'cycle_metadata': self.cycle_metadata,
+        }
+
+
+class BacktestResult(Base):
+    """Backtesting results for gap detection performance."""
+
+    __tablename__ = 'backtest_results'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    gap_type = Column(String(50))  # 'sentiment_mismatch', 'arbitrage', etc. or None for all
+    threshold = Column(DECIMAL(5, 2), nullable=False)  # Confidence threshold used
+    total_predictions = Column(Integer, default=0)
+    correct_predictions = Column(Integer, default=0)
+    win_rate = Column(DECIMAL(5, 4))
+    avg_edge = Column(DECIMAL(5, 4))
+    expected_roi = Column(DECIMAL(5, 4))
+    period_start = Column(DateTime)
+    period_end = Column(DateTime)
+    computed_at = Column(DateTime, default=datetime.utcnow, index=True)
+    result_metadata = Column(JSONB)  # Additional breakdown data
+
+    def __repr__(self):
+        return f"<BacktestResult(type='{self.gap_type}', threshold={self.threshold}, win_rate={self.win_rate})>"
+
+    def to_dict(self):
+        return {
+            'id': str(self.id),
+            'gap_type': self.gap_type,
+            'threshold': float(self.threshold) if self.threshold else None,
+            'total_predictions': self.total_predictions,
+            'correct_predictions': self.correct_predictions,
+            'win_rate': float(self.win_rate) if self.win_rate else None,
+            'avg_edge': float(self.avg_edge) if self.avg_edge else None,
+            'expected_roi': float(self.expected_roi) if self.expected_roi else None,
+            'computed_at': self.computed_at.isoformat()
         }

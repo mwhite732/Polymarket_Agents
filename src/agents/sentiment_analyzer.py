@@ -42,6 +42,16 @@ class SentimentAnalysisAgent:
         # Initialize LLM (OpenAI or Ollama based on config)
         self.llm = get_llm()
 
+        # Initialize ensemble sentiment (VADER + TextBlob)
+        self.ensemble = None
+        if self.settings.enable_ensemble_sentiment:
+            try:
+                from ..sentiment import EnsembleSentiment
+                self.ensemble = EnsembleSentiment()
+                logger.info("Ensemble sentiment (VADER + TextBlob) initialized")
+            except Exception as e:
+                logger.warning(f"Ensemble sentiment unavailable: {e}")
+
         logger.info(f"Sentiment Analysis Agent initialized with {self.settings.llm_provider}")
 
     def create_crewai_agent(self) -> Agent:
@@ -312,13 +322,39 @@ Respond with ONLY valid JSON, no additional text.
 
                         for post, sentiment in zip(batch_posts, sentiments):
                             if sentiment:
+                                # Compute ensemble scores if available
+                                vader_score = None
+                                textblob_score = None
+                                ensemble_score = None
+
+                                if self.ensemble:
+                                    try:
+                                        lexicon = self.ensemble.score(post.content)
+                                        vader_score = Decimal(str(lexicon['vader_score'])) \
+                                            if lexicon['vader_score'] is not None else None
+                                        textblob_score = Decimal(str(lexicon['textblob_score'])) \
+                                            if lexicon['textblob_score'] is not None else None
+
+                                        ens = self.ensemble.ensemble_score(
+                                            llm_score=float(sentiment['score']),
+                                            vader_score=lexicon['vader_score'],
+                                            textblob_score=lexicon['textblob_score'],
+                                            llm_weight=0.5
+                                        )
+                                        ensemble_score = Decimal(str(ens))
+                                    except Exception as e:
+                                        logger.debug(f"Ensemble scoring failed: {e}")
+
                                 analysis = SentimentAnalysis(
                                     post_id=post.id,
                                     contract_id=contract_uuid,
                                     sentiment_score=sentiment['score'],
                                     sentiment_label=sentiment['label'],
                                     confidence=sentiment['confidence'],
-                                    topics=sentiment.get('topics', [])
+                                    topics=sentiment.get('topics', []),
+                                    vader_score=vader_score,
+                                    textblob_score=textblob_score,
+                                    ensemble_score=ensemble_score,
                                 )
                                 session.add(analysis)
 
@@ -352,6 +388,14 @@ Respond with ONLY valid JSON, no additional text.
                 for topic in all_topics:
                     topic_counts[topic] = topic_counts.get(topic, 0) + 1
                 top_topics = sorted(topic_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+
+                # Compute rolling sentiment snapshots
+                if self.ensemble:
+                    try:
+                        for window in [6, 12, 24]:
+                            self.ensemble.compute_rolling_sentiment(contract_id, window)
+                    except Exception as e:
+                        logger.debug(f"Rolling sentiment computation failed: {e}")
 
                 return {
                     'contract_id': contract_id,

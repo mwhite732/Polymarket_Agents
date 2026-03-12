@@ -56,6 +56,27 @@ class Settings(BaseSettings):
         description='LLM temperature for generation'
     )
 
+    # DeepSeek API Configuration (Optional - falls back to Ollama if missing)
+    deepseek_api_key: Optional[str] = Field(default=None, description='DeepSeek API key')
+    deepseek_model: str = Field(default='deepseek-reasoner', description='DeepSeek model name')
+
+    # Tavily Web Search (Optional - skipped if missing)
+    tavily_api_key: Optional[str] = Field(default=None, description='Tavily API key for web search')
+
+    # Grok/xAI API for X/Twitter Sentiment (Optional - falls back to X mirror scraper)
+    grok_api_key: Optional[str] = Field(default=None, description='Grok API key from console.x.ai')
+
+    # Financial Modeling Prep (Optional - skipped for non-financial contracts)
+    fmp_api_key: Optional[str] = Field(default=None, description='FMP API key for financial data')
+
+    # Supabase (Optional - falls back to local PostgreSQL)
+    supabase_url: Optional[str] = Field(default=None, description='Supabase project URL')
+    supabase_key: Optional[str] = Field(default=None, description='Supabase anon key')
+
+    # LangSmith Observability (Optional - tracing disabled if missing)
+    langsmith_api_key: Optional[str] = Field(default=None, description='LangSmith API key')
+    langsmith_project: str = Field(default='polymarket-gaps', description='LangSmith project name')
+
     # Twitter/X API Configuration (Optional)
     twitter_api_key: Optional[str] = Field(default=None, description='Twitter API key')
     twitter_api_secret: Optional[str] = Field(default=None, description='Twitter API secret')
@@ -178,12 +199,33 @@ class Settings(BaseSettings):
         description='Minimum cross-market price difference to flag as arbitrage'
     )
 
+    # Scraper Configuration
+    scraper_respect_robots: bool = Field(default=True, description='Always respect robots.txt')
+    scraper_request_delay: float = Field(default=2.0, description='Delay between scraper requests in seconds')
+    scraper_user_agent: str = Field(
+        default='PolymarketResearchBot/1.0 (research purposes)',
+        description='User agent for scraping requests'
+    )
+
+    # RSS Feed Configuration
+    rss_feeds: Optional[str] = Field(
+        default=None,
+        description='Comma-separated RSS feed URLs (uses defaults if not set)'
+    )
+
     # Feature Flags
     enable_twitter: bool = Field(default=True, description='Enable Twitter data collection')
     enable_reddit: bool = Field(default=True, description='Enable Reddit data collection')
     enable_bluesky: bool = Field(default=True, description='Enable Bluesky data collection (free, no API key)')
     enable_kalshi: bool = Field(default=True, description='Enable Kalshi cross-market comparison')
     enable_manifold: bool = Field(default=True, description='Enable Manifold Markets cross-market comparison')
+    enable_tavily: bool = Field(default=True, description='Enable Tavily web search (requires API key)')
+    enable_grok: bool = Field(default=True, description='Enable Grok X sentiment (requires API key)')
+    enable_x_mirror: bool = Field(default=True, description='Enable X mirror scraper (free fallback for Grok)')
+    enable_gdelt: bool = Field(default=True, description='Enable GDELT geopolitical news (free, no key)')
+    enable_fmp: bool = Field(default=True, description='Enable FMP financial data (requires API key)')
+    enable_ensemble_sentiment: bool = Field(default=True, description='Enable VADER+TextBlob ensemble sentiment')
+    enable_backtesting: bool = Field(default=False, description='Enable backtesting at end of each cycle')
     enable_historical_analysis: bool = Field(
         default=True,
         description='Enable historical pattern analysis'
@@ -204,6 +246,36 @@ class Settings(BaseSettings):
         ge=1,
         description='Maximum gaps to display in output'
     )
+
+    @property
+    def has_deepseek_credentials(self) -> bool:
+        """Check if DeepSeek API key is configured."""
+        return bool(self.deepseek_api_key)
+
+    @property
+    def has_tavily_credentials(self) -> bool:
+        """Check if Tavily API key is configured."""
+        return bool(self.tavily_api_key)
+
+    @property
+    def has_grok_credentials(self) -> bool:
+        """Check if Grok API key is configured."""
+        return bool(self.grok_api_key)
+
+    @property
+    def has_fmp_credentials(self) -> bool:
+        """Check if FMP API key is configured."""
+        return bool(self.fmp_api_key)
+
+    @property
+    def has_supabase_credentials(self) -> bool:
+        """Check if Supabase credentials are configured."""
+        return bool(self.supabase_url and self.supabase_key)
+
+    @property
+    def has_langsmith_credentials(self) -> bool:
+        """Check if LangSmith API key is configured."""
+        return bool(self.langsmith_api_key)
 
     @property
     def has_twitter_credentials(self) -> bool:
@@ -234,28 +306,94 @@ class Settings(BaseSettings):
     def validate_required_services(self):
         """Validate that at least basic services are configured."""
         # Validate LLM configuration
-        if self.llm_provider == 'openai':
+        if self.llm_provider == 'deepseek':
+            if not self.has_deepseek_credentials:
+                print("WARNING: DeepSeek selected but no API key. Falling back to Ollama.")
+                self.llm_provider = 'ollama'
+            else:
+                print(f"INFO: Using DeepSeek model '{self.deepseek_model}'")
+        elif self.llm_provider == 'openai':
             if not self.openai_api_key:
                 raise ValueError("OpenAI API key is required when llm_provider='openai'")
         elif self.llm_provider == 'ollama':
             print(f"INFO: Using Ollama with model '{self.ollama_model}' at {self.ollama_base_url}")
             print("INFO: Make sure Ollama is running: ollama serve")
         else:
-            raise ValueError(f"Invalid llm_provider: {self.llm_provider}. Must be 'openai' or 'ollama'")
+            raise ValueError(f"Invalid llm_provider: {self.llm_provider}. Must be 'openai', 'ollama', or 'deepseek'")
 
+        # Override DATABASE_URL with Supabase if credentials are present
+        if self.has_supabase_credentials:
+            # Supabase provides a direct PostgreSQL connection string
+            # Typical format: postgresql://postgres.[ref]:[password]@aws-0-[region].pooler.supabase.com:6543/postgres
+            supa_url = self.supabase_url
+            supa_key = self.supabase_key
+            # If supabase_url looks like a full postgres:// URL, use it directly
+            if supa_url.startswith('postgresql://') or supa_url.startswith('postgres://'):
+                self.database_url = supa_url
+                print(f"INFO: Using Supabase PostgreSQL: {supa_url.split('@')[-1] if '@' in supa_url else 'configured'}")
+            else:
+                # If it's just the project URL (https://xxx.supabase.co), construct the connection
+                # User should set DATABASE_URL directly for Supabase pooler connection
+                print("INFO: Supabase URL detected but not a PostgreSQL URL.")
+                print("  Set DATABASE_URL to your Supabase pooler connection string instead.")
+                print("  Example: postgresql://postgres.xxxx:password@aws-0-region.pooler.supabase.com:6543/postgres")
+
+        # Auto-disable sources without credentials
         if self.enable_twitter and not self.has_twitter_credentials:
-            print("WARNING: Twitter enabled but credentials not configured. Disabling Twitter.")
             self.enable_twitter = False
 
         if self.enable_reddit and not self.has_reddit_credentials:
-            print("WARNING: Reddit enabled but credentials not configured. Disabling Reddit.")
             self.enable_reddit = False
 
         if self.enable_bluesky and not self.has_bluesky_credentials:
-            print("WARNING: Bluesky enabled but credentials not configured. Disabling Bluesky.")
-            print("  To enable: create a free account at bsky.app, then generate an app password")
-            print("  Add BLUESKY_HANDLE and BLUESKY_APP_PASSWORD to your .env file")
             self.enable_bluesky = False
+
+        if self.enable_tavily and not self.has_tavily_credentials:
+            self.enable_tavily = False
+
+        if self.enable_grok and not self.has_grok_credentials:
+            self.enable_grok = False
+
+        if self.enable_fmp and not self.has_fmp_credentials:
+            self.enable_fmp = False
+
+        # X mirror scraper is only useful when Grok is unavailable
+        if self.enable_grok:
+            self.enable_x_mirror = False
+
+        # Setup LangSmith tracing if configured
+        if self.has_langsmith_credentials:
+            os.environ['LANGCHAIN_TRACING_V2'] = 'true'
+            os.environ['LANGCHAIN_API_KEY'] = self.langsmith_api_key
+            os.environ['LANGCHAIN_PROJECT'] = self.langsmith_project
+
+        # Log all source statuses
+        self._log_enabled_sources()
+
+    def _log_enabled_sources(self):
+        """Log which sources are active at startup."""
+        print("\n-- Active Sources ------------------------------------------")
+        sources = {
+            "LLM":          self.llm_provider,
+            "Tavily":       "ON" if self.enable_tavily else "OFF (no key)",
+            "Grok/X":       "ON" if self.enable_grok else "OFF (no key)",
+            "X Mirror":     "ON" if self.enable_x_mirror else "OFF",
+            "GDELT":        "ON (free)" if self.enable_gdelt else "OFF",
+            "FMP":          "ON" if self.enable_fmp else "OFF (no key)",
+            "Twitter":      "ON" if self.enable_twitter else "OFF",
+            "Reddit":       "ON" if self.enable_reddit else "OFF",
+            "Bluesky":      "ON" if self.enable_bluesky else "OFF",
+            "RSS":          "ON (free)",
+            "Kalshi":       "ON (free)" if self.enable_kalshi else "OFF",
+            "Manifold":     "ON (free)" if self.enable_manifold else "OFF",
+            "Ensemble":     "ON" if self.enable_ensemble_sentiment else "OFF",
+            "Supabase":     "ON" if self.has_supabase_credentials else "OFF (local PostgreSQL)",
+            "LangSmith":    "ON" if self.has_langsmith_credentials else "OFF",
+            "Backtesting":  "ON" if self.enable_backtesting else "OFF",
+        }
+        for source, status in sources.items():
+            print(f"  {source:15s} {status}")
+        print("------------------------------------------------------------\n")
 
 
 # Global settings instance
@@ -295,12 +433,24 @@ def get_llm():
     """
     Get configured LLM instance based on settings.
 
+    Supports: 'deepseek' (primary reasoning), 'openai', 'ollama' (free local fallback).
+    DeepSeek uses the OpenAI-compatible API format.
+
     Returns:
-        LLM instance (either OpenAI or Ollama)
+        LLM instance
     """
     settings = get_settings()
 
-    if settings.llm_provider == 'openai':
+    if settings.llm_provider == 'deepseek':
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(
+            model=settings.deepseek_model,
+            temperature=settings.llm_temperature,
+            api_key=settings.deepseek_api_key,
+            base_url="https://api.deepseek.com/v1",
+            max_tokens=4096
+        )
+    elif settings.llm_provider == 'openai':
         from langchain_openai import ChatOpenAI
         return ChatOpenAI(
             model=settings.openai_model,
@@ -322,3 +472,24 @@ def get_llm():
             )
     else:
         raise ValueError(f"Invalid llm_provider: {settings.llm_provider}")
+
+
+def get_fast_llm():
+    """
+    Get a fast/cheap LLM for simple classification tasks.
+    Always uses Ollama to avoid burning API credits on trivial work.
+
+    Returns:
+        Ollama LLM instance
+    """
+    settings = get_settings()
+    try:
+        from langchain_community.llms import Ollama
+        return Ollama(
+            model=settings.ollama_model,
+            base_url=settings.ollama_base_url,
+            temperature=0.1
+        )
+    except ImportError:
+        # If Ollama not available, fall back to primary LLM
+        return get_llm()

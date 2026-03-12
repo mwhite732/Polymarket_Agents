@@ -136,6 +136,74 @@ class ManifoldAPI:
 
         return self._parse_market(data)
 
+    def get_market_comments(self, market_id: str, limit: int = 50) -> List[Dict]:
+        """
+        Fetch comments for a Manifold market.
+
+        Uses the public /v0/comments endpoint (no auth required).
+
+        Args:
+            market_id: Manifold market ID (contract ID)
+            limit: Maximum comments to return
+
+        Returns:
+            List of comment dicts with post_id, content, author, posted_at, platform
+        """
+        if not self.enabled:
+            return []
+
+        comments = []
+
+        try:
+            params = {"contractId": market_id, "limit": limit}
+            data = self._make_request("/v0/comments", params)
+
+            if not data or not isinstance(data, list):
+                return []
+
+            for item in data:
+                content = item.get('text') or item.get('content', '')
+
+                # Manifold comments can have HTML/markdown; extract plain text
+                if content and '<' in content:
+                    import re
+                    content = re.sub(r'<[^>]+>', ' ', content)
+                    content = re.sub(r'\s+', ' ', content).strip()
+
+                if not content or len(content) < 5:
+                    continue
+
+                comment_id = item.get('id', '')
+                author = item.get('userName') or item.get('userUsername', 'anonymous')
+
+                # Manifold uses millisecond timestamps
+                created_time = item.get('createdTime')
+                if created_time and isinstance(created_time, (int, float)):
+                    from datetime import datetime, timezone
+                    posted_at = datetime.fromtimestamp(created_time / 1000, tz=timezone.utc)
+                else:
+                    from datetime import datetime, timezone
+                    posted_at = datetime.now(timezone.utc)
+
+                likes = item.get('likes', 0) or 0
+
+                comments.append({
+                    'post_id': f"manifold_comment_{comment_id}",
+                    'platform': 'manifold_comment',
+                    'author': str(author),
+                    'content': content.strip(),
+                    'posted_at': posted_at,
+                    'url': f"https://manifold.markets/{item.get('userUsername', '')}/{market_id}",
+                    'engagement_score': int(likes) * 2,
+                })
+
+            logger.info(f"Fetched {len(comments)} Manifold comments for market {market_id[:20]}")
+
+        except Exception as e:
+            logger.debug(f"Could not fetch Manifold comments for {market_id}: {e}")
+
+        return comments
+
     def _parse_market(self, market: Dict) -> Optional[Dict]:
         """
         Parse a Manifold market into standardized format.

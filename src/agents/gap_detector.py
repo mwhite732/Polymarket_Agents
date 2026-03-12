@@ -42,6 +42,22 @@ class GapDetectionAgent:
         self.kalshi_api = KalshiAPI()
         self.manifold_api = ManifoldAPI()
 
+        # Initialize confidence scorer
+        self.confidence_scorer = None
+        try:
+            from ..scoring import ConfidenceScorer
+            self.confidence_scorer = ConfidenceScorer()
+        except Exception as e:
+            logger.warning(f"Confidence scorer unavailable: {e}")
+
+        # Initialize contract feature engine
+        self.feature_engine = None
+        try:
+            from ..features import ContractFeatureEngine
+            self.feature_engine = ContractFeatureEngine()
+        except Exception as e:
+            logger.warning(f"Feature engine unavailable: {e}")
+
         logger.info(f"Gap Detection Agent initialized with {self.settings.llm_provider}")
 
     def _invoke_llm(self, prompt: str) -> str:
@@ -127,8 +143,14 @@ class GapDetectionAgent:
                     # Need sufficient data
                     return None
 
-                # Calculate aggregate sentiment
-                avg_sentiment = sum(float(s.sentiment_score) for s in sentiment_analyses) / len(sentiment_analyses)
+                # Calculate aggregate sentiment (prefer ensemble_score if available)
+                scores = []
+                for s in sentiment_analyses:
+                    if s.ensemble_score is not None:
+                        scores.append(float(s.ensemble_score))
+                    elif s.sentiment_score is not None:
+                        scores.append(float(s.sentiment_score))
+                avg_sentiment = sum(scores) / len(scores) if scores else 0.0
                 positive_count = sum(1 for s in sentiment_analyses if s.sentiment_label == 'positive')
                 positive_ratio = positive_count / len(sentiment_analyses)
 
@@ -160,13 +182,43 @@ class GapDetectionAgent:
                     edge = (market_odds - implied_prob) * 100
 
                 # Calculate confidence score (0-100)
-                # Factors: gap size, data volume, sentiment consistency
-                # Tuned for realistic data volumes (Bluesky + RSS ≈ 10-80 posts per contract)
-                gap_factor = min(gap_size / 0.15, 1.0) * 40  # Max 40 points (15% gap = full score)
-                volume_factor = min(len(sentiment_analyses) / 15, 1.0) * 30  # Max 30 points (15 posts = full score)
-                consistency_factor = abs(positive_ratio - 0.5) * 2 * 30  # Max 30 points
+                # Count distinct social platforms
+                social_platforms = set()
+                for s in sentiment_analyses:
+                    if hasattr(s, 'post') and s.post and hasattr(s.post, 'platform'):
+                        social_platforms.add(s.post.platform)
+                social_sources_count = len(social_platforms)
 
-                confidence = min(max(int(gap_factor + volume_factor + consistency_factor), 0), 100)
+                # Compute contract features if engine available
+                contract_features = {}
+                if self.feature_engine:
+                    try:
+                        hist = session.query(HistoricalOdds).filter(
+                            HistoricalOdds.contract_id == UUID(contract_id)
+                        ).order_by(HistoricalOdds.recorded_at.asc()).all()
+                        hist_dicts = [{'yes_odds': float(h.yes_odds), 'volume': float(h.volume or 0)} for h in hist]
+                        contract_features = self.feature_engine.compute_features(
+                            contract.to_dict(), hist_dicts
+                        )
+                    except Exception:
+                        pass
+
+                if self.confidence_scorer:
+                    consistency = abs(positive_ratio - 0.5) * 2
+                    confidence = self.confidence_scorer.score(
+                        gap_type='sentiment_mismatch',
+                        gap_size=gap_size,
+                        data_volume=len(sentiment_analyses),
+                        sentiment_consistency=consistency,
+                        social_sources_count=social_sources_count,
+                        contract_features=contract_features,
+                    )
+                else:
+                    # Fallback to inline calculation
+                    gap_factor = min(gap_size / 0.15, 1.0) * 40
+                    volume_factor = min(len(sentiment_analyses) / 15, 1.0) * 30
+                    consistency_factor = abs(positive_ratio - 0.5) * 2 * 30
+                    confidence = min(max(int(gap_factor + volume_factor + consistency_factor), 0), 100)
 
                 # Generate explanation using LLM
                 explanation = self._generate_gap_explanation(
@@ -190,12 +242,15 @@ class GapDetectionAgent:
                     'market_odds': contract.current_yes_odds,
                     'implied_odds': implied_odds,
                     'edge_percentage': Decimal(str(round(edge, 2))),
+                    'social_sources_count': social_sources_count,
+                    'contract_features': contract_features,
                     'evidence': {
                         'avg_sentiment': round(avg_sentiment, 3),
                         'positive_ratio': round(positive_ratio, 3),
                         'total_posts': len(sentiment_analyses),
                         'direction': direction,
-                        'gap_size': round(gap_size, 3)
+                        'gap_size': round(gap_size, 3),
+                        'social_sources': list(social_platforms),
                     }
                 }
 
@@ -755,7 +810,9 @@ Respond with ONLY the JSON array, no extra text.
                             evidence=gap['evidence'],
                             market_odds=gap['market_odds'],
                             implied_odds=gap.get('implied_odds'),
-                            edge_percentage=gap['edge_percentage']
+                            edge_percentage=gap['edge_percentage'],
+                            social_sources_count=gap.get('social_sources_count', 0),
+                            contract_features=gap.get('contract_features'),
                         )
                         session.add(detected_gap)
                         all_gaps.append(gap)
