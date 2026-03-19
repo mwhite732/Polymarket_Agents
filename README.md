@@ -1,6 +1,8 @@
 # Polymarket Pricing Gap Detection System
 
-An intelligent multi-agent system that identifies pricing inefficiencies in Polymarket prediction markets by analyzing contract data and social media sentiment in real-time.
+> **Disclaimer:** This project is a solo educational and academic research exercise only. It is not investment advice, not a securities recommendation, and not a solicitation to buy, sell, or trade any financial instrument or prediction market contract. The author is not acting in any professional, advisory, or fiduciary capacity. This project is not associated with any financial institution, broker-dealer, or registered investment advisor. Any results, outputs, or analysis are purely theoretical and should not be used as the basis for any trading or investment decision. Past performance or backtesting results do not guarantee future results.
+
+A multi-agent system built as a learning exercise to explore NLP, agentic AI frameworks, and public API integration using prediction market data.
 
 **Latest:** See [CHANGELOG.md](CHANGELOG.md) for the full v2.0 release notes — 5 new data sources, live dashboard, DeepSeek LLM, ensemble sentiment, smart contract selection, backtesting, and more.
 
@@ -294,5 +296,8 @@ MIT License - See LICENSE file for details
 
 ## Disclaimer
 
-This software is for educational and research purposes only. Not financial advice.
-Use at your own risk. Always verify opportunities independently before making trades.
+This software is a solo educational and academic research project only. It is **not investment advice**, not a securities recommendation, and not a solicitation to buy, sell, or trade any financial instrument or prediction market contract. The author is not acting in any professional, advisory, or fiduciary capacity. This project is **not associated with any financial institution**, broker-dealer, or registered investment advisor.
+
+Any results, outputs, edge calculations, or analysis produced by this system are purely theoretical and academic in nature. They have not been validated for real-world application and **should not be used as the basis for any trading or investment decision**. Past performance or backtesting results do not guarantee future results.
+
+Use at your own risk for learning purposes only.

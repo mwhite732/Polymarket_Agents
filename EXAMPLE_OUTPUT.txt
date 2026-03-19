@@ -1,8 +1,15 @@
 ===============================================================================
-POLYMARKET PRICING GAPS - EXAMPLE OUTPUT
+DISCLAIMER: This is SIMULATED example output for educational/academic purposes
+only. It is NOT investment advice, NOT a securities recommendation, and NOT a
+solicitation to trade. All values are illustrative. Do not use as the basis
+for any trading or investment decision.
 ===============================================================================
 
-This is an example of what the system displays when it detects pricing gaps.
+===============================================================================
+POLYMARKET PRICING GAPS - EXAMPLE OUTPUT (EDUCATIONAL ONLY)
+===============================================================================
+
+This is an example of what the system displays. For academic demonstration only.
 
 ===============================================================================
               [2026-02-05 10:30:45] POLYMARKET PRICING GAPS
