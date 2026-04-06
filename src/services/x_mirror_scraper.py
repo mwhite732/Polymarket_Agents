@@ -73,8 +73,8 @@ class XMirrorScraper:
 
         try:
             from playwright.sync_api import sync_playwright
-            from playwright_stealth import stealth_sync
-            self._stealth_sync = stealth_sync
+            from playwright_stealth import Stealth
+            self._stealth = Stealth()
 
             self._playwright = sync_playwright().start()
             self._browser = self._playwright.chromium.launch(
@@ -240,7 +240,7 @@ class XMirrorScraper:
             try:
                 time.sleep(self.delay)
                 page = self._context.new_page()
-                self._stealth_sync(page)
+                self._stealth.apply_stealth_sync(page)
 
                 url = f"{instance}/search?q={query}&f=tweets"
                 page.goto(url, timeout=25000)
@@ -335,6 +335,10 @@ class XMirrorScraper:
         results = self._search_playwright(query, max_results)
         if results:
             return results
+
+        # _ensure_browser may have disabled us mid-call if playwright is missing
+        if not self.enabled:
+            return []
 
         # Fall back to HTTP instances
         results = self._search_http(query, max_results)

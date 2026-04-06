@@ -1,77 +1,69 @@
 # Core Framework
-crewai==0.28.8
-crewai-tools==0.1.6
-langchain==0.1.20
-langchain-openai==0.1.7
-langchain-community==0.0.38
+crewai>=0.51.0
+crewai-tools>=0.8.0
+langchain>=0.2.0
+langchain-openai>=0.1.7
+langchain-community>=0.2.0
 
 # LLM Integration
-openai==1.30.1  # Optional: only needed if using OpenAI
+openai>=1.30.0  # Optional: only needed if using OpenAI or Grok
 
 # Database
-psycopg2-binary==2.9.9
-sqlalchemy==2.0.30
-alembic==1.13.1
+psycopg2-binary>=2.9.9
+sqlalchemy>=2.0.30
+alembic>=1.13.0
 
 # HTTP & API
-requests==2.31.0
-httpx==0.27.0
-aiohttp==3.9.5
+requests>=2.31.0
+httpx>=0.27.0
 
 # Social Media APIs
-praw==7.7.1  # Reddit
-tweepy==4.14.0  # Twitter/X
-snscrape==0.7.0.20230622  # Twitter scraping alternative
+praw>=7.7.0  # Reddit (optional)
+tweepy>=4.14.0  # Twitter/X (optional)
 
 # News & RSS
-feedparser==6.0.11  # RSS feed parser (FREE, no API keys needed)
+feedparser>=6.0.11  # RSS feed parser (FREE, no API keys needed)
 
 # Data Processing
-pandas==2.2.2
-numpy==1.26.4
-
-# Async Support
-asyncio==3.4.3
-aiofiles==23.2.1
+numpy>=1.26.0
 
 # Configuration
-python-dotenv==1.0.0
-pydantic==2.7.1
-pydantic-settings==2.2.1
+python-dotenv>=1.0.0
+pydantic>=2.7.0
+pydantic-settings>=2.2.0
 
 # Utilities
-python-dateutil==2.9.0
-pytz==2024.1
-colorama==0.4.6  # Colored console output
-rich==13.7.1  # Beautiful terminal formatting
+python-dateutil>=2.9.0
+rich>=13.7.0  # Terminal formatting
 
 # Logging
-loguru==0.7.2
+loguru>=0.7.0
 
 # Testing (for development)
-pytest==8.2.0
-pytest-asyncio==0.23.6
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
 
 # Rate Limiting
-ratelimit==2.2.1
-
-# Data Validation
-marshmallow==3.21.1
+ratelimit>=2.2.1
 
 # Sentiment Analysis (Ensemble)
-vaderSentiment==3.3.2
-textblob==0.18.0
+vaderSentiment>=3.3.2
+textblob>=0.18.0
 
 # Dashboard (FastAPI)
-fastapi==0.111.0
-uvicorn==0.30.1
-python-multipart==0.0.9
+fastapi>=0.111.0
+uvicorn>=0.30.0
+python-multipart>=0.0.9
 
 # Web Search (Optional - needs TAVILY_API_KEY)
-tavily-python==0.3.3
+tavily-python>=0.3.0
 
 # Observability (Optional - needs LANGSMITH_API_KEY)
-langsmith==0.1.63
+langsmith>=0.1.63
 
 # Web Scraping
-beautifulsoup4==4.12.3
+beautifulsoup4>=4.12.0
+
+# Browser Automation (Optional - for X mirror scraper)
+playwright>=1.44.0
+playwright-stealth>=1.0.6

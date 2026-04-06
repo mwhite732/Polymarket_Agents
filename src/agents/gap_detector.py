@@ -262,94 +262,176 @@ class GapDetectionAgent:
         """
         Detect information asymmetry gaps (recent news not reflected in odds).
 
-        Args:
-            contract_id: Contract UUID as string
+        Requires three concurrent signals to reduce false positives:
+        1. A source-weighted sentiment shift in the recent window vs baseline
+        2. A volume spike (more posts per hour than baseline rate)
+        3. The market price not having caught up to the expected move
 
-        Returns:
-            Gap dictionary if detected, None otherwise
+        News articles (news_rss) are weighted 3x; Reddit 1.5x; social 1x.
+        Engagement score provides a secondary weight boost (up to 1.5x).
         """
+        # Source quality weights — news > reddit > social
+        SOURCE_WEIGHTS = {'news_rss': 3.0, 'reddit': 1.5}
+        DEFAULT_WEIGHT = 1.0
+
+        # Time windows: 2-hour "recent" vs 2-6 hour "baseline"
+        RECENT_HOURS = 2
+        BASELINE_HOURS = 6
+
         try:
             with self.db_manager.get_session() as session:
-                # Get contract
                 contract = session.query(Contract).filter(
                     Contract.id == UUID(contract_id)
                 ).first()
 
-                if not contract:
+                if not contract or not contract.current_yes_odds:
                     return None
 
-                # Get very recent sentiment (last 3 hours) vs older (3-6 hours ago)
                 now = datetime.now(timezone.utc)
-                recent_cutoff = now - timedelta(hours=3)
-                older_cutoff = now - timedelta(hours=6)
+                recent_cutoff = now - timedelta(hours=RECENT_HOURS)
+                baseline_cutoff = now - timedelta(hours=BASELINE_HOURS)
 
-                # Recent sentiment
-                recent_sentiment = session.query(SentimentAnalysis).join(
+                # Fetch recent sentiment (with posts for platform/engagement data)
+                recent_analyses = session.query(SentimentAnalysis).join(
                     SentimentAnalysis.post
                 ).filter(
                     SentimentAnalysis.contract_id == UUID(contract_id),
                     SentimentAnalysis.analyzed_at >= recent_cutoff
                 ).all()
 
-                # Older sentiment
-                older_sentiment = session.query(SentimentAnalysis).join(
+                # Fetch baseline sentiment
+                baseline_analyses = session.query(SentimentAnalysis).join(
                     SentimentAnalysis.post
                 ).filter(
                     SentimentAnalysis.contract_id == UUID(contract_id),
-                    SentimentAnalysis.analyzed_at >= older_cutoff,
+                    SentimentAnalysis.analyzed_at >= baseline_cutoff,
                     SentimentAnalysis.analyzed_at < recent_cutoff
                 ).all()
 
-                if len(recent_sentiment) < 3 or len(older_sentiment) < 3:
+                # Minimum volume requirements
+                if len(recent_analyses) < 5 or len(baseline_analyses) < 3:
                     return None
 
-                # Calculate sentiment shifts
-                recent_avg = sum(float(s.sentiment_score) for s in recent_sentiment) / len(recent_sentiment)
-                older_avg = sum(float(s.sentiment_score) for s in older_sentiment) / len(older_sentiment)
+                # --- Volume spike check ---
+                # Normalize both windows to posts/hour for a fair comparison
+                baseline_window_hours = BASELINE_HOURS - RECENT_HOURS  # 4 hours
+                recent_rate = len(recent_analyses) / RECENT_HOURS
+                baseline_rate = len(baseline_analyses) / baseline_window_hours
+                volume_spike_ratio = recent_rate / baseline_rate if baseline_rate > 0 else 1.0
 
-                sentiment_shift = recent_avg - older_avg
+                # --- Source-weighted sentiment ---
+                def weighted_avg(analyses):
+                    total_weight = 0.0
+                    weighted_sum = 0.0
+                    for s in analyses:
+                        score = float(
+                            s.ensemble_score if s.ensemble_score is not None
+                            else s.sentiment_score
+                        )
+                        platform = s.post.platform if s.post else 'unknown'
+                        weight = SOURCE_WEIGHTS.get(platform, DEFAULT_WEIGHT)
+                        # Engagement boost: up to 1.5x for highly-engaged posts
+                        engagement = (s.post.engagement_score or 0) if s.post else 0
+                        weight *= 1.0 + (min(engagement, 100) / 100.0) * 0.5
+                        weighted_sum += score * weight
+                        total_weight += weight
+                    return weighted_sum / total_weight if total_weight > 0 else 0.0
 
-                # Check if there's a significant shift
-                if abs(sentiment_shift) < 0.10:  # Threshold for significant shift (was 0.2)
+                recent_avg = weighted_avg(recent_analyses)
+                baseline_avg = weighted_avg(baseline_analyses)
+                sentiment_shift = recent_avg - baseline_avg
+
+                if abs(sentiment_shift) < 0.15:
                     return None
 
-                # Check if odds have moved accordingly
-                historical_odds = session.query(HistoricalOdds).filter(
-                    HistoricalOdds.contract_id == UUID(contract_id)
-                ).order_by(HistoricalOdds.recorded_at.desc()).limit(10).all()
+                # --- Directional consistency ---
+                # At least 60% of recent posts must agree on direction
+                shift_direction = 1 if sentiment_shift > 0 else -1
+                agreeing = sum(
+                    1 for s in recent_analyses
+                    if (float(s.sentiment_score) * shift_direction) > 0
+                )
+                consistency = agreeing / len(recent_analyses)
 
-                if len(historical_odds) < 2:
+                if consistency < 0.60:
                     return None
 
-                recent_odds = float(historical_odds[0].yes_odds)
-                older_odds = float(historical_odds[-1].yes_odds)
-                odds_movement = recent_odds - older_odds
+                # --- Odds movement over the same window ---
+                # Get the most recent historical odds record before recent_cutoff
+                # so we compare market movement over exactly the sentiment window.
+                odds_at_window_start = session.query(HistoricalOdds).filter(
+                    HistoricalOdds.contract_id == UUID(contract_id),
+                    HistoricalOdds.recorded_at <= recent_cutoff
+                ).order_by(HistoricalOdds.recorded_at.desc()).first()
 
-                # Information asymmetry: sentiment shifted but odds haven't
-                # Positive sentiment shift → odds should increase
-                # Negative sentiment shift → odds should decrease
-                expected_direction = 1 if sentiment_shift > 0 else -1
-                actual_direction = 1 if odds_movement > 0 else -1 if odds_movement < 0 else 0
+                if not odds_at_window_start:
+                    # Fall back to the oldest available record
+                    odds_at_window_start = session.query(HistoricalOdds).filter(
+                        HistoricalOdds.contract_id == UUID(contract_id)
+                    ).order_by(HistoricalOdds.recorded_at.asc()).first()
 
-                if expected_direction == actual_direction and abs(odds_movement) > 0.05:
-                    # Odds already moved - no asymmetry
+                if not odds_at_window_start:
                     return None
 
-                # Calculate confidence
-                shift_magnitude = abs(sentiment_shift)
-                confidence = int(min(shift_magnitude / 0.5, 1.0) * 60 + 20)
+                odds_then = float(odds_at_window_start.yes_odds)
+                odds_now = float(contract.current_yes_odds)
+                odds_movement = odds_now - odds_then
 
-                # Generate explanation
+                # Estimate how much the market should have moved given the signal
+                scale = getattr(self.settings, 'gap_sentiment_prob_scale', 0.4)
+                expected_move = abs(sentiment_shift) * scale
+                market_lag = expected_move - abs(odds_movement)
+
+                # If the market has already moved as much or more than expected, no asymmetry
+                if abs(odds_movement) >= expected_move:
+                    return None
+
+                # Counter-move: market moved opposite to sentiment (stronger signal)
+                odds_direction = 1 if odds_movement > 0 else -1 if odds_movement < 0 else 0
+                counter_move = (odds_direction != 0 and odds_direction != shift_direction)
+
+                # --- Confidence scoring (max 100) ---
+                # Shift magnitude: 0-30
+                shift_factor = min(abs(sentiment_shift) / 0.5, 1.0) * 30
+                # Volume spike: 0-25 (0 at 1x rate, 25 at 3x+ rate)
+                volume_factor = max(0.0, min((volume_spike_ratio - 1.0) / 2.0, 1.0) * 25)
+                # Directional consistency: 0-20 (0 at 60%, 20 at 100%)
+                consistency_factor = max(0.0, (consistency - 0.60) / 0.40 * 20)
+                # Market lag size: 0-15
+                lag_factor = min(market_lag / 0.15, 1.0) * 15
+                # Counter-move bonus: 10
+                counter_factor = 10 if counter_move else 0
+
+                confidence = int(shift_factor + volume_factor + consistency_factor + lag_factor + counter_factor)
+                confidence = max(0, min(confidence, 100))
+
+                # --- Implied probability and edge ---
+                implied_move = sentiment_shift * scale
+                implied_prob = max(0.05, min(0.95, odds_now + implied_move))
+                edge_pct = abs(implied_prob - odds_now) * 100
+
+                # Source breakdown for evidence
+                sources_breakdown: Dict[str, int] = {}
+                for s in recent_analyses:
+                    platform = s.post.platform if s.post else 'unknown'
+                    sources_breakdown[platform] = sources_breakdown.get(platform, 0) + 1
+
+                direction_str = "bullish" if sentiment_shift > 0 else "bearish"
+
                 explanation = self._generate_gap_explanation(
                     contract=contract,
                     gap_type="info_asymmetry",
-                    market_odds=recent_odds,
-                    implied_odds=None,
+                    market_odds=odds_now,
+                    implied_odds=implied_prob,
                     sentiment_data={
-                        'recent_avg': recent_avg,
-                        'older_avg': older_avg,
-                        'shift': sentiment_shift,
-                        'recent_posts': len(recent_sentiment)
+                        'weighted_sentiment_shift': round(sentiment_shift, 3),
+                        'recent_avg': round(recent_avg, 3),
+                        'baseline_avg': round(baseline_avg, 3),
+                        'volume_spike_ratio': round(volume_spike_ratio, 2),
+                        'consistency': round(consistency, 2),
+                        'odds_movement_in_window': round(odds_movement, 4),
+                        'has_news_sources': 'news_rss' in sources_breakdown,
+                        'direction': direction_str,
                     }
                 )
 
@@ -359,14 +441,23 @@ class GapDetectionAgent:
                     'confidence_score': confidence,
                     'explanation': explanation,
                     'market_odds': contract.current_yes_odds,
-                    'implied_odds': None,
-                    'edge_percentage': Decimal(str(round(abs(sentiment_shift) * 50, 2))),
+                    'implied_odds': Decimal(str(round(implied_prob, 4))),
+                    'edge_percentage': Decimal(str(round(edge_pct, 2))),
                     'evidence': {
-                        'sentiment_shift': round(sentiment_shift, 3),
+                        'weighted_sentiment_shift': round(sentiment_shift, 3),
                         'recent_avg_sentiment': round(recent_avg, 3),
-                        'older_avg_sentiment': round(older_avg, 3),
-                        'recent_posts': len(recent_sentiment),
-                        'odds_movement': round(odds_movement, 4)
+                        'baseline_avg_sentiment': round(baseline_avg, 3),
+                        'recent_posts': len(recent_analyses),
+                        'baseline_posts': len(baseline_analyses),
+                        'volume_spike_ratio': round(volume_spike_ratio, 2),
+                        'consistency': round(consistency, 2),
+                        'sources_breakdown': sources_breakdown,
+                        'has_news_sources': 'news_rss' in sources_breakdown,
+                        'odds_at_window_start': round(odds_then, 4),
+                        'odds_movement': round(odds_movement, 4),
+                        'market_lag': round(market_lag, 4),
+                        'direction': direction_str,
+                        'counter_move': counter_move,
                     }
                 }
 
@@ -719,6 +810,163 @@ Respond with ONLY the JSON array, no extra text.
             logger.error(f"Error detecting cross-market arbitrage: {e}")
             return []
 
+    def detect_volume_spike(self, contract_id: str) -> Optional[Dict]:
+        """
+        Detect volume spike gaps — sudden surges in trading volume that haven't
+        yet been reflected in the contract price.
+
+        A spike indicates informed traders are positioning before public information
+        catches up. The gap is strongest when volume surges but price stays flat.
+
+        Logic:
+        - Split HistoricalOdds records into a recent window and a baseline window
+        - Compare volume rates (per hour) between windows
+        - If recent_rate / baseline_rate >= threshold AND price lag exists, flag it
+        """
+        if not getattr(self.settings, 'enable_volume_spike_detection', True):
+            return None
+
+        RECENT_HOURS = getattr(self.settings, 'volume_spike_recent_hours', 2)
+        BASELINE_HOURS = getattr(self.settings, 'volume_spike_baseline_hours', 12)
+        MIN_SPIKE_RATIO = getattr(self.settings, 'volume_spike_min_ratio', 3.0)
+
+        try:
+            with self.db_manager.get_session() as session:
+                contract = session.query(Contract).filter(
+                    Contract.id == UUID(contract_id)
+                ).first()
+
+                if not contract or not contract.current_yes_odds:
+                    return None
+
+                now = datetime.now(timezone.utc)
+                recent_cutoff = now - timedelta(hours=RECENT_HOURS)
+                baseline_cutoff = now - timedelta(hours=BASELINE_HOURS)
+
+                # Fetch recent and baseline HistoricalOdds records (volume stored per snapshot)
+                recent_records = session.query(HistoricalOdds).filter(
+                    HistoricalOdds.contract_id == UUID(contract_id),
+                    HistoricalOdds.recorded_at >= recent_cutoff,
+                    HistoricalOdds.volume.isnot(None),
+                ).order_by(HistoricalOdds.recorded_at.asc()).all()
+
+                baseline_records = session.query(HistoricalOdds).filter(
+                    HistoricalOdds.contract_id == UUID(contract_id),
+                    HistoricalOdds.recorded_at >= baseline_cutoff,
+                    HistoricalOdds.recorded_at < recent_cutoff,
+                    HistoricalOdds.volume.isnot(None),
+                ).order_by(HistoricalOdds.recorded_at.asc()).all()
+
+                # Need enough data points in both windows
+                if len(recent_records) < 2 or len(baseline_records) < 3:
+                    return None
+
+                # Volume stored is volume_24h (a snapshot level). To get traded volume
+                # *within* a window, sum the incremental increases between consecutive snapshots.
+                # Increases represent new volume; decreases (counter-intuitive) are ignored.
+                def incremental_volume(records: list) -> float:
+                    total = 0.0
+                    for i in range(1, len(records)):
+                        delta = float(records[i].volume) - float(records[i - 1].volume)
+                        if delta > 0:
+                            total += delta
+                    return total
+
+                recent_vol = incremental_volume(recent_records)
+                baseline_vol = incremental_volume(baseline_records)
+
+                # Normalize to per-hour rates
+                baseline_window_hours = BASELINE_HOURS - RECENT_HOURS
+                recent_rate = recent_vol / RECENT_HOURS
+                baseline_rate = baseline_vol / baseline_window_hours if baseline_window_hours > 0 else 0.0
+
+                if baseline_rate <= 0:
+                    return None
+
+                spike_ratio = recent_rate / baseline_rate
+
+                if spike_ratio < MIN_SPIKE_RATIO:
+                    return None
+
+                # --- Price lag check ---
+                # Compare price at the start of the recent window vs now.
+                # A large spike with minimal price movement is the core gap signal.
+                odds_at_spike_start = float(recent_records[0].yes_odds)
+                odds_now = float(contract.current_yes_odds)
+                price_move = abs(odds_now - odds_at_spike_start)
+
+                # --- Confidence scoring (max 100) ---
+                # Spike magnitude: 3x→10x+ mapped to 0–40 pts
+                spike_factor = min((spike_ratio - MIN_SPIKE_RATIO) / (10.0 - MIN_SPIKE_RATIO), 1.0) * 40
+
+                # Price lag: 0–30 pts. Full score if price moved < 1% despite spike.
+                # Score decays as the market starts to catch up (up to 10% move).
+                price_lag_factor = max(0.0, 1.0 - (price_move / 0.10)) * 30
+
+                # Absolute volume size: bigger markets get higher weight — 0–15 pts
+                abs_vol_factor = min(recent_vol / 50_000, 1.0) * 15
+
+                # Recency: how close to "now" the spike peak is — 0–15 pts
+                # Use the most recent record timestamp
+                most_recent_ts = recent_records[-1].recorded_at
+                if most_recent_ts.tzinfo is None:
+                    most_recent_ts = most_recent_ts.replace(tzinfo=timezone.utc)
+                minutes_since_last_record = (now - most_recent_ts).total_seconds() / 60
+                recency_factor = max(0.0, 1.0 - (minutes_since_last_record / (RECENT_HOURS * 60))) * 15
+
+                confidence = int(spike_factor + price_lag_factor + abs_vol_factor + recency_factor)
+                confidence = max(0, min(confidence, 100))
+
+                # Direction: if price hasn't moved, direction is ambiguous — flag as "unknown"
+                # until cross-referenced with sentiment. If price started moving, use that direction.
+                if price_move < 0.02:
+                    direction = "unknown"
+                elif odds_now > odds_at_spike_start:
+                    direction = "bullish"
+                else:
+                    direction = "bearish"
+
+                explanation = self._generate_gap_explanation(
+                    contract=contract,
+                    gap_type="volume_spike",
+                    market_odds=odds_now,
+                    implied_odds=None,
+                    sentiment_data={
+                        'spike_ratio': round(spike_ratio, 2),
+                        'recent_volume': round(recent_vol, 2),
+                        'baseline_volume_rate_per_hour': round(baseline_rate, 2),
+                        'recent_volume_rate_per_hour': round(recent_rate, 2),
+                        'price_move': round(price_move, 4),
+                        'direction': direction,
+                    }
+                )
+
+                return {
+                    'contract_id': contract_id,
+                    'gap_type': 'volume_spike',
+                    'confidence_score': confidence,
+                    'explanation': explanation,
+                    'market_odds': contract.current_yes_odds,
+                    'implied_odds': None,
+                    'edge_percentage': Decimal('0'),
+                    'evidence': {
+                        'spike_ratio': round(spike_ratio, 2),
+                        'recent_volume': round(recent_vol, 2),
+                        'baseline_volume_rate_per_hour': round(baseline_rate, 2),
+                        'recent_volume_rate_per_hour': round(recent_rate, 2),
+                        'recent_snapshots': len(recent_records),
+                        'baseline_snapshots': len(baseline_records),
+                        'price_at_spike_start': round(odds_at_spike_start, 4),
+                        'price_now': round(odds_now, 4),
+                        'price_move': round(price_move, 4),
+                        'direction': direction,
+                    }
+                }
+
+        except Exception as e:
+            logger.error(f"Error detecting volume spike: {e}")
+            return None
+
     def detect_all_gaps(self, contract_id: str) -> List[Dict]:
         """
         Run all gap detection methods for a contract.
@@ -750,6 +998,11 @@ Respond with ONLY the JSON array, no extra text.
         arbitrage_gaps = self.detect_cross_market_arbitrage(contract_id)
         gaps.extend(arbitrage_gaps)
 
+        # Volume spike
+        gap = self.detect_volume_spike(contract_id)
+        if gap:
+            gaps.append(gap)
+
         return gaps
 
     def analyze_all_contracts(self) -> List[Dict]:
@@ -765,16 +1018,21 @@ Respond with ONLY the JSON array, no extra text.
 
         try:
             with self.db_manager.get_session() as session:
-                # Only analyze contracts that have sentiment data (from social posts)
-                from sqlalchemy import exists
+                from sqlalchemy import exists, or_
                 now = datetime.now(timezone.utc)
+                # Include contracts that have sentiment data OR recent volume history —
+                # volume spikes can appear before social discussion catches up.
                 has_sentiment = exists().where(
                     SentimentAnalysis.contract_id == Contract.id
+                )
+                has_volume_history = exists().where(
+                    HistoricalOdds.contract_id == Contract.id,
+                    HistoricalOdds.volume.isnot(None),
                 )
                 contracts = session.query(Contract).filter(
                     Contract.active == True,
                     (Contract.end_date > now) | (Contract.end_date == None),
-                    has_sentiment
+                    or_(has_sentiment, has_volume_history)
                 ).all()
 
                 dedupe_hours = getattr(self.settings, 'gap_dedupe_hours', 24)

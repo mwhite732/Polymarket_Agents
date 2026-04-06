@@ -1,6 +1,7 @@
 """GDELT geopolitical news API (free, no key required)."""
 
 import hashlib
+import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
@@ -32,13 +33,17 @@ class GDELTAPI:
         if self.enabled:
             logger.info("GDELT API initialized (free, no key required)")
 
+    # GDELT is a free shared API — be conservative with request rate
+    _MIN_REQUEST_INTERVAL = 10.0  # seconds between requests
+    _last_request_time: float = 0.0
+
     def _create_session(self) -> requests.Session:
         session = requests.Session()
         retry_strategy = Retry(
-            total=3,
+            total=2,
             status_forcelist=[500, 502, 503, 504],
             allowed_methods=["GET"],
-            backoff_factor=1
+            backoff_factor=2
         )
         adapter = HTTPAdapter(max_retries=retry_strategy)
         session.mount("https://", adapter)
@@ -46,6 +51,13 @@ class GDELTAPI:
             "User-Agent": "PolymarketGapDetector/1.0 (Educational Research)",
         })
         return session
+
+    def _wait_for_rate_limit(self):
+        """Enforce minimum interval between GDELT requests."""
+        elapsed = time.time() - GDELTAPI._last_request_time
+        if elapsed < self._MIN_REQUEST_INTERVAL:
+            time.sleep(self._MIN_REQUEST_INTERVAL - elapsed)
+        GDELTAPI._last_request_time = time.time()
 
     def search_news(self, query: str, days_back: int = 3, max_results: int = 25) -> List[Dict]:
         """
@@ -63,6 +75,8 @@ class GDELTAPI:
             return []
 
         try:
+            self._wait_for_rate_limit()
+
             params = {
                 "query": query,
                 "mode": "artlist",
@@ -73,6 +87,11 @@ class GDELTAPI:
             }
 
             response = self.session.get(GDELT_API_URL, params=params, timeout=15)
+
+            if response.status_code == 429:
+                logger.warning("GDELT rate limited — skipping this query")
+                return []
+
             response.raise_for_status()
             data = response.json()
 

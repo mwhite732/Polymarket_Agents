@@ -122,7 +122,7 @@ class Settings(BaseSettings):
         description='Max contracts to analyze per cycle'
     )
     max_contracts_for_social: int = Field(
-        default=50,
+        default=10,
         ge=1,
         description='Max contracts to fetch social/news data for (more = more coverage, more API usage)'
     )
@@ -233,6 +233,25 @@ class Settings(BaseSettings):
     enable_arbitrage_detection: bool = Field(
         default=True,
         description='Enable arbitrage detection'
+    )
+    enable_volume_spike_detection: bool = Field(
+        default=True,
+        description='Enable volume spike detection as a gap signal'
+    )
+    volume_spike_min_ratio: float = Field(
+        default=3.0,
+        ge=1.0,
+        description='Minimum volume rate ratio (recent/baseline) to flag a spike'
+    )
+    volume_spike_recent_hours: int = Field(
+        default=2,
+        ge=1,
+        description='Hours to consider "recent" for volume spike detection'
+    )
+    volume_spike_baseline_hours: int = Field(
+        default=12,
+        ge=2,
+        description='Total lookback window hours for baseline volume calculation'
     )
 
     # Output Configuration

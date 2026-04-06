@@ -105,7 +105,11 @@ class PolymarketAPI:
                     if attempt >= self._max_429_retries:
                         logger.error("Rate limit (429) persisted after %d retries", self._max_429_retries)
                     raise
-                logger.error(f"HTTP error: {e}")
+                # Log 404s at debug — callers use optional endpoints that may not exist
+                if e.response is not None and e.response.status_code == 404:
+                    logger.debug(f"HTTP 404: {e}")
+                else:
+                    logger.error(f"HTTP error: {e}")
                 raise
             except requests.exceptions.RequestException as e:
                 last_error = e

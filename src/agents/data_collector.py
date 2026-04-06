@@ -361,14 +361,21 @@ class DataCollectionAgent:
         Returns:
             Dictionary mapping contract IDs to social posts
         """
-        logger.info(f"Starting social media data collection for {len(contracts)} contracts...")
+        max_for_social = getattr(self.settings, 'max_contracts_for_social', 10)
+        contracts_to_process = contracts[:max_for_social]
+
+        logger.info(
+            f"Starting social media data collection for "
+            f"{len(contracts_to_process)}/{len(contracts)} contracts "
+            f"(cap: MAX_CONTRACTS_FOR_SOCIAL={max_for_social})..."
+        )
 
         results = {}
         hours_back = self.settings.data_collection_lookback_hours
 
-        # Process all contracts passed in (garbage already filtered out,
-        # sorted best-first so most interesting contracts get processed first)
-        for contract in contracts:
+        # Contracts are already sorted best-first (highest composite score),
+        # so we process the most interesting ones within the cap.
+        for contract in contracts_to_process:
             contract_id = contract['id']
             question = contract['question']
 
